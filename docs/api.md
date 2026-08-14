@@ -211,10 +211,13 @@ Its entire security posture is that it is not reachable.
 - What remains true regardless: anything that can reach the port can run agent CLIs with the
   operator's credentials. That is the boundary worth thinking about, and it is drawn outside
   Relay.
-- Relay adds no permission flags of its own. If an agent needs write access, that is an edit
-  to its adapter — a visible change in the repository, not a runtime flag.
-- Agents inherit the environment `relay serve` was started in, and Relay neither inspects nor
-  edits it. Which credentials an agent finds there is therefore an operator concern: to have
-  Claude Code use an existing claude.ai login, start Relay in an environment with no
-  conflicting Anthropic API credential variables set, because Claude Code prefers those over
-  the login. See [agent-cli-notes.md](agent-cli-notes.md#authentication-is-the-operators).
+- Relay passes no permission, sandbox or credential flags to any agent, and it neither
+  inspects nor edits an agent's environment or configuration. What an agent may do, and as
+  whom, is set where that agent already keeps it — Claude Code's settings, Codex's
+  `config.toml`, and the environment `relay serve` was started in. Relay inherits all of it
+  and chooses none of it.
+- The consequence is worth stating plainly rather than discovering: **an agent that is not
+  permitted to run `relay` cannot hand work to another agent.** Agent-to-agent handoff is
+  something the operator enables, not something Relay grants. The prerequisites are in the
+  [README](../README.md#prerequisites), and what was measured is in
+  [agent-cli-notes.md](agent-cli-notes.md#agents-cannot-call-relay-by-default).

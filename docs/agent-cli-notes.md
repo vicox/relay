@@ -174,6 +174,31 @@ carrying the stderr tail is what makes this diagnosable rather than mysterious.
 
 ---
 
+## Agents cannot call Relay by default
+
+Measured during Step 6, when both agents were asked to run `relay list`. Neither could, for
+different reasons, because Relay passes no permission or sandbox flags:
+
+| Agent | What happened | What the operator sets |
+| --- | --- | --- |
+| Claude Code | Bash denied — a permission prompt cannot be answered under `-p` | `permissions.allow: ["Bash(relay *)"]` in `~/.claude/settings.json` |
+| Codex | the command ran, but the sandbox blocked the loopback connection | `sandbox_mode = "workspace-write"` and `[sandbox_workspace_write] network_access = true` in `~/.codex/config.toml` |
+
+Two narrower routes were tried and do not work:
+
+- A **project-level** `.claude/settings.json` is read but its `allow` entries are ignored until
+  the workspace is trusted: *"this workspace has not been trusted … set
+  `projects[…].hasTrustDialogAccepted: true`"*.
+- A **project-scoped** `[projects."<dir>"]` block in `config.toml` does not carry sandbox
+  policy; Codex kept blocking the connection until the keys were set globally.
+
+So Codex's grant is unavoidably broader than Claude's: `relay *` is one command family, while
+Codex has no read-only-plus-network mode, and reaching Relay means allowing workspace writes
+and all network access. Worth knowing before enabling it.
+
+`relay` must also be on the `PATH` of the spawned agent, which means the `PATH` that
+`relay serve` was started with, since children inherit it.
+
 ## The MCP client (ChatGPT)
 
 Relay's second front door, checked because it is product surface that moves.
