@@ -19,7 +19,7 @@ class CliError extends Error {
 
 export async function runClient(argv: string[], port: number): Promise<number> {
   const [command, ...rest] = argv;
-  const args = rest.filter((arg) => !arg.startsWith("--"));
+  const { words, flags } = parseArgs(rest);
   const client = new Client({ name: "relay-cli", version: "0.1.0" });
 
   try {
@@ -32,24 +32,24 @@ export async function runClient(argv: string[], port: number): Promise<number> {
   try {
     switch (command) {
       case "start": {
-        const started = await call(client, "start", { agent: need(args[0], "agent"), cwd: flag(rest, "cwd") });
+        const started = await call(client, "start", { agent: need(words[0], "agent"), cwd: flags.get("cwd") });
         process.stdout.write(`${started.session}\n`);
         break;
       }
 
       case "send": {
-        const [agent, session] = await address(client, args);
-        await call(client, "send", { agent, session, text: message(args, 2), from: sender(rest) });
+        const [agent, session] = await address(client, words);
+        await call(client, "send", { agent, session, text: message(words, 2), from: sender(flags) });
         break;
       }
 
       case "read": {
-        const [agent, session] = await address(client, args);
+        const [agent, session] = await address(client, words);
         const reply = await call(client, "read", {
           agent,
           session,
-          after: Number(flag(rest, "after") ?? 0),
-          wait: rest.includes("--wait") ? 30_000 : 0,
+          after: Number(flags.get("after") ?? 0),
+          wait: flags.has("wait") ? 30_000 : 0,
         });
         if (reply.text) process.stdout.write(`${String(reply.text).replace(/\n?$/, "\n")}`);
         break;
@@ -58,8 +58,8 @@ export async function runClient(argv: string[], port: number): Promise<number> {
       case "ask": {
         // Sugar over send + read: no operation of its own, just the loop every
         // calling agent would otherwise have to write.
-        const [agent, session] = await address(client, args);
-        const sent = await call(client, "send", { agent, session, text: message(args, 2), from: sender(rest) });
+        const [agent, session] = await address(client, words);
+        const sent = await call(client, "send", { agent, session, text: message(words, 2), from: sender(flags) });
         let after = Number(sent.cursor ?? 0);
         for (;;) {
           const reply = await call(client, "read", { agent, session, after, wait: 30_000 });
@@ -77,19 +77,19 @@ export async function runClient(argv: string[], port: number): Promise<number> {
       }
 
       case "interrupt": {
-        const [agent, session] = await address(client, args);
+        const [agent, session] = await address(client, words);
         await call(client, "interrupt", { agent, session });
         break;
       }
 
       case "status": {
-        const [agent, session] = await address(client, args);
+        const [agent, session] = await address(client, words);
         process.stdout.write(`${JSON.stringify(await call(client, "status", { agent, session }), null, 2)}\n`);
         break;
       }
 
       case "forget": {
-        const [agent, session] = await address(client, args);
+        const [agent, session] = await address(client, words);
         await call(client, "forget", { agent, session });
         break;
       }
@@ -148,13 +148,34 @@ function message(args: string[], at: number): string {
   return text;
 }
 
-function sender(argv: string[]): string | undefined {
-  return flag(argv, "from") ?? process.env.RELAY_FROM;
+/**
+ * The flags that take a value. Knowing which ones do is the whole point: a
+ * flag's value is not a word of the message. Removing `--from` while leaving
+ * what follows it among the words would append transport metadata to the text
+ * and hand it to the agent, which is exactly what must never happen.
+ *
+ * `port` is here because `relay serve --port` and the client commands are read
+ * from the same argv.
+ */
+const VALUED_FLAGS = new Set(["from", "cwd", "after", "port"]);
+
+function parseArgs(argv: string[]): { words: string[]; flags: Map<string, string> } {
+  const words: string[] = [];
+  const flags = new Map<string, string>();
+  for (let at = 0; at < argv.length; at++) {
+    const arg = argv[at];
+    if (!arg.startsWith("--")) {
+      words.push(arg);
+      continue;
+    }
+    const name = arg.slice(2);
+    flags.set(name, VALUED_FLAGS.has(name) ? (argv[++at] ?? "") : "");
+  }
+  return { words, flags };
 }
 
-function flag(argv: string[], name: string): string | undefined {
-  const at = argv.indexOf(`--${name}`);
-  return at === -1 ? undefined : argv[at + 1];
+function sender(flags: Map<string, string>): string | undefined {
+  return flags.get("from") || process.env.RELAY_FROM;
 }
 
 function need(value: string | undefined, what: string): string {

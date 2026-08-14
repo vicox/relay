@@ -186,10 +186,11 @@ way transport metadata stays useful in practice. Since each agent CLI exports it
 id, the operator's `relay` shim can set it — see the
 [README prerequisites](../README.md#prerequisites).
 
-> **Known defect.** The `--from` *flag* currently appends its value to the message: the client
-> strips `--from` but not what follows it, so `relay send … "hello" --from codex/3b7e` delivers
-> `hello codex/3b7e` to the agent. That contradicts the rule above that Relay never delivers
-> `from`. `$RELAY_FROM` is unaffected and is the recommended path until the client is fixed.
+A flag's value is never a word of the message. The client knows which flags take one, so
+`relay send … "hello" --from codex/3b7e` sends exactly `hello` — and the same holds for
+`--cwd`, `--after` and `--port`. Regression tests in `test/client.test.ts` assert it against an
+agent that echoes its stdin, because this is the one place where a parsing slip would break the
+rule that `from` never reaches the agent.
 
 Because the CLI speaks MCP rather than a REST API, Relay cannot be driven with `curl`. Use
 `relay`, or any MCP inspector.
