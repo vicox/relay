@@ -95,10 +95,7 @@ test("unparseable output is refused rather than guessed at", () => {
 });
 
 test("claude is a built-in agent", () => {
-  assert.deepEqual(
-    builtinAgents.map((agent) => agent.name),
-    ["claude"],
-  );
+  assert.ok(builtinAgents.includes(claude));
 });
 
 test("a recorded Claude turn drives the real pipeline", async () => {

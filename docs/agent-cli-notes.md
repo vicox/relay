@@ -81,6 +81,23 @@ Three traps for the parser:
 
 including on exit 0. Only pair stderr with a non-zero exit.
 
+### Authentication is the operator's
+
+That same warning names the rule: Claude Code prefers `ANTHROPIC_API_KEY` (or another API
+credential in the environment) over an existing claude.ai login. Measured during Step 4 — a
+turn failed with `Credit balance is too low` on exit 1 while the login itself was fine.
+
+Relay inherits the environment `relay serve` was started in and does not touch it, so this is
+an operator decision, not an agent's and not Relay's. To use a claude.ai subscription, start
+Relay in an environment where those variables are unset:
+
+```sh
+env -u ANTHROPIC_API_KEY relay serve
+```
+
+Encoding the policy in Relay was considered and rejected: it would put one agent's
+authentication rules inside a component whose whole job is to know nothing about them.
+
 ---
 
 ## Codex

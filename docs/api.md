@@ -213,3 +213,8 @@ Its entire security posture is that it is not reachable.
   Relay.
 - Relay adds no permission flags of its own. If an agent needs write access, that is an edit
   to its adapter — a visible change in the repository, not a runtime flag.
+- Agents inherit the environment `relay serve` was started in, and Relay neither inspects nor
+  edits it. Which credentials an agent finds there is therefore an operator concern: to have
+  Claude Code use an existing claude.ai login, start Relay in an environment with no
+  conflicting Anthropic API credential variables set, because Claude Code prefers those over
+  the login. See [agent-cli-notes.md](agent-cli-notes.md#authentication-is-the-operators).
