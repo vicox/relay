@@ -124,6 +124,10 @@ SIGINT to the CLI, SIGKILL after a grace period. Output already produced stays r
 session stays addressable and the next `send` resumes it. On an idle session this is a no-op
 with `interrupted: false`.
 
+An interrupted turn is recorded as unsuccessful — `lastTurn.ok = false` — whatever exit code
+the CLI happens to return. Claude exits 0 after SIGINT and Codex exits 1, and neither number
+matters: Relay sent the signal, so it already knows how the turn ended.
+
 ## status
 
 ```
@@ -196,9 +200,16 @@ carry the two rules a caller cannot infer — one turn in flight per session, an
 
 Relay spawns AI CLIs that run arbitrary code. It is an execution surface, not a message board.
 
-- Binds `127.0.0.1` by default. A non-loopback bind requires `--host` *and* `RELAY_TOKEN`;
-  Relay refuses rather than warns.
-- Reaching Relay from ChatGPT means exposing that surface off this machine, through a tunnel
-  or a public bind. That is a deliberate act, and the token is not optional for it.
+Its entire security posture is that it is not reachable.
+
+- Relay binds `127.0.0.1`. There is no `--host`, no TLS, and no authentication, because there
+  is nothing to protect the listener from except this machine.
+- **Reach is transport, and transport is not Relay's job.** ChatGPT calls a localhost MCP
+  server through [OpenAI's Secure MCP Tunnel](architecture.md#reaching-relay-from-chatgpt),
+  which dials outward rather than exposing anything inward. Ingress, identity and encryption
+  belong to that layer, and Relay has no opinion about them.
+- What remains true regardless: anything that can reach the port can run agent CLIs with the
+  operator's credentials. That is the boundary worth thinking about, and it is drawn outside
+  Relay.
 - Relay adds no permission flags of its own. If an agent needs write access, that is an edit
   to its adapter — a visible change in the repository, not a runtime flag.

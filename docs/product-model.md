@@ -40,9 +40,9 @@ session.
 
 `idle` or `busy`. Nothing else.
 
-A failed CLI invocation is a property of that turn, not of the session. It is reported by
-`status` as `lastTurn: { ok: false, exitCode, error }` and it changes nothing about how the
-session can be used: it stays addressable, and the next `send` resumes it exactly as if the
+A failed CLI invocation — or an interrupted one — is a property of that turn, not of the
+session. It is reported by `status` as `lastTurn: { ok: false, exitCode, error }` and it
+changes nothing about how the session can be used: it stays addressable, and the next `send` resumes it exactly as if the
 turn had succeeded. Relay does not decide that a conversation is beyond saving.
 
 ### A session is a Relay address before it is an agent session

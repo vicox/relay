@@ -47,8 +47,9 @@ reaches `lastTurn.from` and the log unchanged, and never reaches the agent's std
 
 ## 4. Both front doors
 
-`mcp.ts` — the operation table as MCP tools over HTTP, loopback by default, token check for
-anything else. `client.ts` — the CLI as an MCP client. `main.ts` to choose between them.
+`mcp.ts` — the operation table as MCP tools over HTTP on `127.0.0.1`, with no auth and no TLS,
+because reach is the tunnel's job. `client.ts` — the CLI as an MCP client. `main.ts` to choose
+between them.
 
 **Exit criteria:** an MCP inspector lists seven tools and drives a real Claude Code session end
 to end; then `relay ask claude <id> "…"` does the same from a shell. This is the first time a
@@ -66,8 +67,8 @@ wrong — fix that rather than special-case it.
 
 Both halves of the use case, in order:
 
-1. ChatGPT, with Relay as a connector, starts a Claude session and a Codex session, sends work
-   to each, and reads both replies.
+1. ChatGPT, reaching Relay through a Secure MCP Tunnel, starts a Claude session and a Codex
+   session, sends work to each, and reads both replies.
 2. A Claude Code session, given nothing but the `relay` CLI and a session id, sends work to that
    Codex session and reads the reply. Then the reverse.
 

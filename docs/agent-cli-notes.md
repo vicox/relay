@@ -181,25 +181,32 @@ Sources: [OpenAI: building MCP servers](https://developers.openai.com/api/docs/m
 
 ---
 
-## Two findings that contradict the design
+## Two findings that contradicted the design
 
-Recorded here, **not** applied to the design docs.
+Both are now settled in the design docs. The measurements are kept because they are the reason
+the design reads the way it does.
 
-### 1. `lastTurn.ok = code === 0` mislabels an interrupted Claude turn
+### 1. Exit codes disagree about interruption — resolved
 
-[architecture.md](architecture.md#running-one-turn) derives the outcome from the exit code.
-Claude exits **0** after SIGINT, so a turn Relay itself killed would be recorded as having
-succeeded. Codex exits 1, so the two agents disagree.
+Claude exits **0** after SIGINT (`terminal_reason: "aborted_streaming"`), Codex exits 1. So
+`ok = code === 0` would have recorded a turn Relay itself killed as a success.
 
-Relay sends the signal, so it already knows; the outcome does not have to be inferred from the
-exit code at all.
+Resolved by not inferring the outcome from the exit code: `turn.run` remembers whether it
+signalled the child, and an interrupted turn is unsuccessful whatever the CLI returns. Local to
+turn execution — no new session state, no new field. See
+[architecture.md](architecture.md#running-one-turn).
 
-### 2. `RELAY_TOKEN` cannot be presented by ChatGPT
+### 2. ChatGPT cannot present a bearer token — resolved
 
-[api.md](api.md#trust) requires a bearer token for any non-loopback bind, and reaching Relay
-from ChatGPT means exactly that. But ChatGPT's documented options are OAuth or no auth, and it
-is reported unable to send a custom API key — so the one mechanism the design names is the one
-mechanism the primary caller cannot use.
+ChatGPT requires a public HTTPS endpoint with OAuth or no auth, and is reported unable to send
+a custom API key, so a `RELAY_TOKEN` header was unusable by Relay's primary caller.
 
-The `RELAY_TOKEN` rule still holds for the CLI front door. What is unresolved is how the
-ChatGPT endpoint is protected without Relay growing an OAuth server.
+Resolved by removing authentication and ingress from Relay altogether. Relay serves MCP over
+HTTP on `127.0.0.1`; ChatGPT reaches it through OpenAI's **Secure MCP Tunnel**, whose
+`tunnel-client` runs locally, dials outward over HTTPS, and forwards MCP requests inward — so
+nothing is published and there is nothing to authenticate. The public-server requirements above
+are the tunnel's to satisfy, not Relay's. See
+[architecture.md](architecture.md#reaching-relay-from-chatgpt).
+
+Tunnel reference: [OpenAI: Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) ·
+[openai/tunnel-client](https://github.com/openai/tunnel-client)

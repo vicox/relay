@@ -57,6 +57,27 @@ protocol, two callers, one description of the API.
 The listener could have been a Unix socket for the CLI, with HTTP added only for ChatGPT.
 That is two IPC mechanisms to keep the ability to `curl`, which nothing requires.
 
+### Reaching Relay from ChatGPT
+
+The listener binds `127.0.0.1` and stays there. Relay does no public ingress, terminates no
+TLS, and authenticates nobody.
+
+ChatGPT reaches it through **OpenAI's Secure MCP Tunnel**: a `tunnel-client` process runs
+beside Relay, opens an outbound HTTPS connection to OpenAI, long-polls for MCP requests, and
+forwards them to Relay's local endpoint. No inbound port is opened and nothing about Relay is
+published, so the requirements ChatGPT places on a *public* MCP server — HTTPS, OAuth or
+no-auth, a stable external URL — are satisfied by the tunnel rather than by Relay.
+
+This is why v1 needs no token, no certificate and no auth flow. Connectivity is transport, it
+sits outside Relay, and it is configured rather than coded:
+
+```
+ChatGPT ──HTTPS──▶ OpenAI ◀──outbound HTTPS── tunnel-client ──▶ 127.0.0.1:7717/mcp (Relay)
+```
+
+Relay's side of that arrangement is one thing: serve MCP over HTTP on localhost. If the tunnel
+is replaced by something else later, Relay does not change.
+
 ## Modules
 
 ```
@@ -136,7 +157,8 @@ send("claude", "9f1c…", text)
   │        │     ├─ { nativeId } → bind the session, flush to disk
   │        │     └─ { text }     → append to the output buffer, wake waiters
   │        ├─ stderr → small ring buffer, used only for lastTurn.error
-  │        └─ on exit → lastTurn = { ok: code === 0, exitCode, error, endedAt, from }
+  │        └─ on exit → ok = we did not signal it, and code === 0
+  │                     lastTurn = { ok, exitCode, error, endedAt, from }
   │                     log: turn claude/9f1c ended, ok, 8.2s, 1.4kB out
   │                     state = idle, wake waiters
   │
@@ -145,6 +167,11 @@ read("claude", "9f1c…", after: cursor, wait: 30000)
 ```
 
 A waiter is a promise plus a timer. That is the entire notification mechanism.
+
+The outcome is not read off the exit code alone. `turn.run` remembers whether *it* signalled
+the child, and a turn Relay interrupted is unsuccessful whatever the CLI returns — Claude exits
+0 after SIGINT, Codex exits 1, and neither number describes what happened. This lives in
+`turn.ts` and nowhere else: no new session state, no new field, just an honest `ok`.
 
 Writing `lastTurn` as a failure *before* spawning is what makes a killed Relay tell the truth:
 if the process dies mid-turn, the recorded outcome already says the turn never finished, and
@@ -202,6 +229,7 @@ needs no cleanup: no children, so every session is idle.
 | What happens | What Relay does |
 | --- | --- |
 | CLI exits non-zero | `lastTurn.ok = false` with the stderr tail; session stays idle and resumable |
+| `interrupt()` was called | `lastTurn.ok = false` regardless of exit code, because Relay sent the signal |
 | CLI never exits (mid-turn prompt) | stays `busy` until interrupted. No timeout: Relay cannot tell a stuck turn from a long one |
 | Unparseable output line | ignored |
 | Send to a busy session | `busy` error |
