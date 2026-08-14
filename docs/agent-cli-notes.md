@@ -179,25 +179,57 @@ carrying the stderr tail is what makes this diagnosable rather than mysterious.
 Measured during Step 6, when both agents were asked to run `relay list`. Neither could, for
 different reasons, because Relay passes no permission or sandbox flags:
 
-| Agent | What happened | What the operator sets |
+| Agent | What happened | What it needs |
 | --- | --- | --- |
 | Claude Code | Bash denied — a permission prompt cannot be answered under `-p` | `permissions.allow: ["Bash(relay *)"]` in `~/.claude/settings.json` |
-| Codex | the command ran, but the sandbox blocked the loopback connection | `sandbox_mode = "workspace-write"` and `[sandbox_workspace_write] network_access = true` in `~/.codex/config.toml` |
+| Codex | the command ran, but the sandbox blocked the loopback connection | `sandbox_mode = "workspace-write"` with `[sandbox_workspace_write] network_access = true` |
 
-Two narrower routes were tried and do not work:
+`relay` must also be on the spawned agent's `PATH`, which is the `PATH` `relay serve` was
+started with, since children inherit it.
 
-- A **project-level** `.claude/settings.json` is read but its `allow` entries are ignored until
+Codex's grant is unavoidably broader than Claude's: `relay *` is one command family, while
+Codex has no read-only-plus-network mode, so reaching a loopback port also permits workspace
+writes and all network access. **`CODEX_HOME` is what keeps that from applying to every Codex
+the operator runs** — point `relay serve` at a Codex home holding only these settings and a
+copy of (or symlink to) `auth.json`, and the operator's own `~/.codex/config.toml` stays
+untouched. Measured: Codex authenticated from that home, ran the command, reached Relay, with
+zero sandbox keys in the default config.
+
+### Narrower arrangements that do not work
+
+Each of these was tried and measured, so nobody need try them again.
+
+- **Relay as an MCP server in Codex** (`codex mcp add relay --url …`) is the obvious idea,
+  since Relay already speaks MCP and a server connection is made by the Codex process rather
+  than by a sandboxed shell command. Codex does call the tools — and every call comes back
+  `user cancelled MCP tool call`, because `codex exec` has no one to ask for approval.
+  `mcp_servers.relay.auto_approved` (both `true` and a tool list) and
+  `approval_policy = "never"` are all accepted by `--strict-config` and change nothing. The
+  route is closed for non-interactive use.
+- **Project-level `.claude/settings.json`** is read, but its `allow` entries are ignored until
   the workspace is trusted: *"this workspace has not been trusted … set
   `projects[…].hasTrustDialogAccepted: true`"*.
-- A **project-scoped** `[projects."<dir>"]` block in `config.toml` does not carry sandbox
-  policy; Codex kept blocking the connection until the keys were set globally.
+- **A project-scoped `[projects."<dir>"]` block** in `config.toml` does not carry sandbox
+  policy. Codex kept blocking the connection until the keys were global — which is why the
+  answer is a separate home rather than a per-directory rule.
 
-So Codex's grant is unavoidably broader than Claude's: `relay *` is one command family, while
-Codex has no read-only-plus-network mode, and reaching Relay means allowing workspace writes
-and all network access. Worth knowing before enabling it.
+Note that `codex mcp add` / `remove` rewrites `config.toml` through Codex's own serializer,
+which reorders keys and normalises values (`120` becomes `120.0`, empty `args = []` disappears).
+Harmless, but it is not a surgical edit.
 
-`relay` must also be on the `PATH` of the spawned agent, which means the `PATH` that
-`relay serve` was started with, since children inherit it.
+### Each agent exports its own session id
+
+Measured by asking each agent to run `env`:
+
+| Agent | Variable | What it holds |
+| --- | --- | --- |
+| Claude Code | `CLAUDE_CODE_SESSION_ID` | the session id — which for Claude *is* the Relay address, because Relay chose it |
+| Codex | `CODEX_THREAD_ID` | the id Codex assigned itself, which Relay stores as `nativeId` |
+
+This is what lets an operator's `relay` shim set `$RELAY_FROM` so the transport log names the
+immediate sender of a nested request, with no new concept and nothing injected by Relay. Check
+`CODEX_THREAD_ID` first: a Codex started from inside a Claude Code session inherits that
+session's `CLAUDE_CODE_SESSION_ID` and would otherwise sign its messages as Claude.
 
 ## The MCP client (ChatGPT)
 

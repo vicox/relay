@@ -180,9 +180,16 @@ relay ask codex 3b7e "Does this migration drop data?"
 `ask` adds no operation and no concept. It is the loop every calling agent would otherwise
 write, written once. It is the only command an agent normally needs.
 
-`send` and `ask` take `--from`, defaulting to `$RELAY_FROM`. An agent launched with
-`RELAY_FROM=claude/9f1c…` in its environment therefore signs its sends correctly without
-being told to, which is the only way transport metadata stays useful in practice.
+`send` and `ask` take `--from`, defaulting to `$RELAY_FROM`. An agent whose environment carries
+`RELAY_FROM=claude/9f1c…` therefore signs its sends without being told to, which is the only
+way transport metadata stays useful in practice. Since each agent CLI exports its own session
+id, the operator's `relay` shim can set it — see the
+[README prerequisites](../README.md#prerequisites).
+
+> **Known defect.** The `--from` *flag* currently appends its value to the message: the client
+> strips `--from` but not what follows it, so `relay send … "hello" --from codex/3b7e` delivers
+> `hello codex/3b7e` to the agent. That contradicts the rule above that Relay never delivers
+> `from`. `$RELAY_FROM` is unaffected and is the recommended path until the client is fixed.
 
 Because the CLI speaks MCP rather than a REST API, Relay cannot be driven with `curl`. Use
 `relay`, or any MCP inspector.
