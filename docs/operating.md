@@ -55,6 +55,12 @@ commits or switches branches breaks the arrangement, which is why it is stated i
 
 ## The lifecycle
 
+All of it assumes the agents may run what they are asked to run. Relay passes no permission
+flags, so `git` — and `gh` where pull requests are involved — has to be granted to Claude
+Code the same way `relay` itself is; see the prerequisites in the README. A missing grant
+does not arrive as a question. Under `-p` it is a denial, and from the coordinator's side it
+looks like a session that answers perfectly normally while the command never runs.
+
 1. **Ops creates the worktree.** From `repos/<project>`:
    `git worktree add -b <ticket> ../../worktrees/<ticket>`, or with a start point when the
    work continues someone else's branch. Wait for the turn to reach `idle` before the next
