@@ -123,3 +123,18 @@ queued and nothing is retried.
 This single constraint replaces a scheduler. It also matches the underlying reality: the CLIs
 resume from a persisted transcript, and two concurrent resumes of the same transcript would
 corrupt it.
+
+### What it means for two agents talking
+
+`relay ask` sends and then reads until the other session is idle, so it blocks — and it
+blocks *inside the asking agent's own turn*. The asker is therefore busy for the whole
+exchange, not just while composing the question.
+
+So when one agent asks another, the one that was asked replies within its turn and stops
+there. A reply sent back as its own `send` fails with `busy`, because the asker is busy
+waiting for exactly that answer. Whoever asks holds the thread.
+
+The same follows for anyone else addressing the asker mid-exchange: a session that has been
+busy for a long time is usually waiting on another agent rather than stuck. `status` shows
+which. None of this is machinery Relay adds — it is the one rule, seen from the inside of a
+nested call.

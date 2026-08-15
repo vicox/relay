@@ -59,6 +59,11 @@ cannot hand work to anyone.
    { "permissions": { "allow": ["Bash(relay *)"] } }
    ```
 
+   That grant is the way back to Relay and nothing more. Whatever else an agent is expected
+   to do — `Bash(git *)`, `Bash(gh *)`, anything with side effects — has to be granted the
+   same way, and under `-p` a missing grant is a denial rather than a prompt. Relay does not
+   widen it: no permission flag is ever passed to any agent.
+
 3. **Codex may reach it.** Relay listens on loopback and Codex's default sandbox blocks that,
    so Codex needs `sandbox_mode = "workspace-write"` with `network_access = true`. Rather than
    loosening the operator's own Codex, give Relay's sessions their own Codex home and point
@@ -154,6 +159,7 @@ Relay only carried text between addresses.
 | [docs/api.md](docs/api.md) | The five operations, and the CLI and MCP front doors |
 | [docs/architecture.md](docs/architecture.md) | Project structure, and how a turn actually runs |
 | [docs/agent-cli-notes.md](docs/agent-cli-notes.md) | What the agent CLIs actually do, measured |
+| [docs/operating.md](docs/operating.md) | One worked arrangement for running agents on real work |
 | [docs/plan.md](docs/plan.md) | Implementation order, with exit criteria |
 
 ## Tests
