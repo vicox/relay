@@ -170,3 +170,7 @@ npm test
 
 No models and no network: the agent CLIs are stood in for by a scripted fake, and the parsers
 are tested against real captured output in `test/fixtures/`.
+
+## License
+
+Relay is licensed under the MIT License. See [LICENSE](LICENSE) for the full text.
