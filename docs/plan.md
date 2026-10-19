@@ -92,7 +92,8 @@ out until something forces them in.
   [architecture.md](architecture.md#a-turn-is-a-process).
 - **Persisted output** — only if losing unread output on restart actually hurts in practice.
 - **A REST surface** — only if something that is not an MCP client has to call Relay.
-- **More agents** — one file each.
+- **More agents** — one file each. OpenCode 2 is the first proof; see
+  [opencode-plan.md](opencode-plan.md).
 - **Correlation ids** — a handle for a whole multi-hop exchange. The log already records every
   hop, so a human can follow `from` backwards; representing the chain itself is a new concept.
 - **Remote agents** — sessions on another machine. The first idea here that would need a new

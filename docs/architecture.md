@@ -8,7 +8,7 @@ A Relay session is a long-running conversation, but Relay keeps no long-running 
 process. Each turn spawns the agent's CLI, resumes the conversation by id, streams JSONL
 until the CLI exits, and appends what it produced to the session's output.
 
-Both supported CLIs make this possible:
+All three supported CLIs make this possible:
 
 ```sh
 claude -p --output-format stream-json --verbose --session-id <uuid>   # first turn
@@ -16,9 +16,17 @@ claude -p --output-format stream-json --verbose --resume    <uuid>   # later tur
 
 codex exec --json -                                                  # first turn
 codex exec resume <uuid> --json -                                    # later turns
+
+opencode run --format json                                           # first turn
+opencode run --format json --session <ses_…>                         # later turns
 ```
 
 The prompt goes in on stdin in every case.
+
+OpenCode 2 normally routes `run` through its per-user background service. Relay treats
+that service as an implementation detail: it still spawns one `opencode` client per turn
+and does not manage the service or its sessions directly. SIGINT aborts the server-side
+turn; a SIGKILL to the client does not.
 
 What this buys, and what it costs:
 
@@ -42,8 +50,8 @@ API. It is not in v1.
 Two independent requirements, one listener.
 
 **ChatGPT is not on this machine.** It cannot spawn a local stdio MCP server, so the only way
-it reaches Relay is an MCP endpoint over HTTP. Since ChatGPT coordinating Claude and Codex is
-the primary use case, that endpoint is v1, not a later adapter.
+it reaches Relay is an MCP endpoint over HTTP. Since ChatGPT coordinating Claude, Codex and
+OpenCode is the primary use case, that endpoint is v1, not a later adapter.
 
 **Turns outlive a CLI invocation.** `relay send` returns while the turn is still running, and
 `relay read` is a different process minutes later. Child processes and output buffers have to
@@ -99,7 +107,8 @@ relay/
 │   └── agents/
 │       ├── agents.ts            # name → definition
 │       ├── claude.ts            # argv + event parser
-│       └── codex.ts             # argv + event parser
+│       ├── codex.ts             # argv + event parser
+│       └── opencode.ts          # argv + event parser
 └── test/
     ├── fake-agent.ts            # emits scripted JSONL; stands in for a real CLI
     ├── core.test.ts             # against the fake agent
@@ -114,7 +123,7 @@ make a decision the other cannot see.
 
 ## The Agent definition
 
-The only abstraction in Relay, and it exists because there are two agents on day one.
+The only abstraction in Relay, and it exists because agents differ.
 
 ```ts
 type AgentEvent = { nativeId?: string; text?: string }
@@ -130,9 +139,10 @@ type Agent = {
 Three pure functions and a name. The adapter never spawns, never writes, never keeps state —
 `turn.ts` owns all of that, once. Adding an agent is one file and one line in `agents.ts`.
 
-The two binding styles fall out of `start` alone: Claude's returns `--session-id <sessionId>`
-and its `parse` confirms the id it was given; Codex's ignores the argument and its `parse`
-discovers the id. No capability flags, no branches in `core`.
+Two binding styles fall out of `start` alone: Claude's returns `--session-id <sessionId>`
+and its `parse` confirms the id it was given; Codex and OpenCode ignore the argument and
+their `parse` discovers the id the CLI assigned. No capability flags, no branches in
+`core`.
 
 `parse` is deliberately lossy: it reports only the session id and assistant text. Tool calls,
 usage and thinking are dropped. That is the boundary where Relay refuses to become a
@@ -151,7 +161,8 @@ send("claude", "9f1c…", text)
   │   ├─ state = busy
   │   └─ turn.run(session, text)  (not awaited)
   │        ├─ argv = nativeId ? agent.resume(nativeId) : agent.start(sessionId)
-  │        ├─ spawn(agent.name, argv, { cwd: session.cwd })
+  │        ├─ spawn(agent.name, argv, { cwd: session.cwd,
+  │        │                              env: { ...process.env, PWD: session.cwd } })
   │        ├─ stdin ← text, then closed
   │        ├─ stdout → split lines → agent.parse
   │        │     ├─ { nativeId } → bind the session, flush to disk
@@ -167,6 +178,14 @@ read("claude", "9f1c…", after: cursor, wait: 30000)
 ```
 
 A waiter is a promise plus a timer. That is the entire notification mechanism.
+
+`PWD` is set explicitly because OpenCode resolves its project Location and tool cwd from
+`PWD`, not from the process cwd. For Claude and Codex the value simply matches the cwd
+Relay already chose.
+
+Relay has no SIGINT/SIGTERM handler. Stopping `relay serve` while a turn is busy can
+orphan the agent child; for OpenCode's shared service the server-side turn can continue.
+Stop only after interrupting every busy session and waiting for it to go idle.
 
 The outcome is not read off the exit code alone. `turn.run` remembers whether *it* signalled
 the child, and a turn Relay interrupted is unsuccessful whatever the CLI returns — Claude exits
@@ -234,7 +253,7 @@ needs no cleanup: no children, so every session is idle.
 | Unparseable output line | ignored |
 | Send to a busy session | `busy` error |
 | Relay killed mid-turn | turn lost, unread output lost, session addressable; `lastTurn` already says the turn did not finish |
-| Codex first turn dies before reporting its id | session stays unbound; the next `send` starts a fresh conversation |
+| Codex or OpenCode first turn dies before reporting its id | session stays unbound; the next `send` starts a fresh conversation |
 | Disk write fails | the request fails; Relay will not hand out an address it cannot store |
 
 No timeouts and no retries anywhere. Both would require Relay to have an opinion about what

@@ -5,7 +5,7 @@ delivered without it.
 
 ## Agent
 
-A kind of AI CLI that Relay can run, identified by a name: `claude`, `codex`.
+A kind of AI CLI that Relay can run, identified by a name: `claude`, `codex`, `opencode`.
 
 An agent is a *definition*, not a running thing. It says how to begin a conversation, how to
 resume one, and how to read that CLI's JSONL output. Adding an agent means adding a
@@ -50,22 +50,25 @@ turn had succeeded. Relay does not decide that a conversation is beyond saving.
 `start()` creates **a Relay-local address only**. No agent process runs, and no conversation
 exists on the agent's side. `nativeId` is `null`, and `status` says so.
 
-The session becomes **bound** to a native conversation during its first `send`. The two
-agents bind differently, and the difference is visible rather than smoothed over:
+The session becomes **bound** to a native conversation during its first `send`. The agents
+bind in two ways, and the difference is visible rather than smoothed over:
 
 - **Claude Code** accepts a caller-chosen id (`--session-id <uuid>`), so Relay passes its own
   session id down. The native id is known in advance; the native *conversation* still only
   exists once the first turn has run.
 - **Codex** assigns its own id and only reveals it in the first turn's output. Relay reads it
   from the stream and records it.
+- **OpenCode** is also CLI-bound: it assigns a `ses_…` id and reveals it in the stream.
+  V2 accepts a caller-supplied `ses_…` id on `--session`, but the create-if-missing path did
+  not inherit the configured model, so the first turn is created without `--session`.
 
 The consequence, which is why the distinction is not hidden: if a first turn dies before
-Codex reports its id, the session stays unbound, and the next `send` starts a fresh native
-conversation instead of resuming — nothing had been said yet, so nothing is lost. For Claude,
-a dead first turn may still leave a resumable transcript under the id Relay chose, and the
-next `send` resumes it.
+Codex or OpenCode reports its id, the session stays unbound, and the next `send` starts a
+fresh native conversation instead of resuming — nothing had been said yet, so nothing is
+lost. For Claude, a dead first turn may still leave a resumable transcript under the id Relay
+chose, and the next `send` resumes it.
 
-Both cases are correct, and neither is a special case in the API. Callers see one field:
+All three cases are correct, and none is a special case in the API. Callers see one field:
 `nativeId`, null or not.
 
 ## Why Message is not a concept

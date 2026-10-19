@@ -8,9 +8,14 @@ delivers messages.
 ```
 ChatGPT ──▶ Relay ──▶ Claude          ChatGPT coordinates, over MCP
                                       Claude and Codex talk directly, over the CLI
+                                      OpenCode too, with the relay shim (see below)
 Claude  ──▶ Relay ──▶ Codex
 Codex   ──▶ Relay ──▶ Claude
+OpenCode ─▶ Relay ──▶ Claude
 ```
+
+The OpenCode arrow requires the `relay` shim on Relay's PATH; the measured handoff is
+recorded in [docs/agent-cli-notes.md](docs/agent-cli-notes.md).
 
 Relay is not an orchestrator. There is no workflow engine, no task graph, no scheduler, no
 retries, and no memory. If work needs to be broken down, the agents do that — Relay carries
@@ -22,6 +27,7 @@ the messages.
 relay serve                                   # the process that owns the turns
 relay start claude                             # prints a session id
 relay ask claude 9f1c "Review src/auth.ts"     # send, then read until idle
+relay start opencode                           # same commands, OpenCode's own config
 ```
 
 `ask` is the only command an agent normally needs. A session id may be any unique prefix. The
@@ -32,13 +38,15 @@ shell, such as ChatGPT.
 ## Prerequisites
 
 Relay passes no permission, sandbox or credential flags to any agent, and never edits an
-agent's environment or configuration. That makes three things the operator's to arrange —
+agent's configuration. It inherits the agent environment but explicitly overrides `PWD`
+with the session's `cwd`. That makes three things the operator's to arrange —
 and without them agent-to-agent handoff cannot work, because an agent that may not run `relay`
 cannot hand work to anyone.
 
 1. **`relay` on the agents' `PATH`.** Spawned agents inherit the environment `relay serve` was
-   started with, so `relay` has to be resolvable there. One shim does that and signs their
-   sends, using the session id each CLI already exports:
+   started with — except `PWD`, which Relay sets to the session's `cwd` — so `relay` has to
+   be resolvable there. This also covers OpenCode sessions launched by Relay. One shim does
+   that and signs Claude/Codex sends:
 
    ```sh
    #!/bin/sh
@@ -93,6 +101,24 @@ together:
 ```sh
 CODEX_HOME=~/.relay/codex-home PATH=~/.relay/bin:$PATH env -u ANTHROPIC_API_KEY relay serve
 ```
+
+OpenCode uses its normal configuration and credentials; Relay passes no model, agent or
+permission flag. V2 is permissive by default: its base policy allows shell tools with the
+host user's authority and allows `external_directory` access. Configure `permissions` if
+you need a boundary.
+
+Its `run` command normally talks to a per-user background service, which Relay does not
+manage. If Relay starts that service, the service process inherits Relay's environment;
+measured OpenCode shell tools use the client's environment, not the service's, but
+server-side plugins were not exhaustively tested. Start OpenCode once from a normal shell
+before Relay if you want the service process environment to stay clean. If `relay serve`
+itself is started from inside an OpenCode session, unset `OPENCODE`, `OPENCODE_SESSION_ID`
+and `OPENCODE_TERMINAL` or child OpenCode clients can attach to that session's service.
+
+A Relay-launched OpenCode session can call the existing `relay` CLI when the shim is on the
+PATH Relay passes to it; this was measured with a nested `relay ask` returning
+`handoff-pong`. An independently launched OpenCode session needs the shim and
+`RELAY_HOME`/`RELAY_PORT` in its own environment.
 
 What was measured for all of this — including the narrower arrangements that do not work — is
 in [docs/agent-cli-notes.md](docs/agent-cli-notes.md).
@@ -159,6 +185,8 @@ Relay only carried text between addresses.
 | [docs/api.md](docs/api.md) | The five operations, and the CLI and MCP front doors |
 | [docs/architecture.md](docs/architecture.md) | Project structure, and how a turn actually runs |
 | [docs/agent-cli-notes.md](docs/agent-cli-notes.md) | What the agent CLIs actually do, measured |
+| [docs/opencode-plan.md](docs/opencode-plan.md) | The OpenCode adapter plan and measured V2 contract |
+| [docs/opencode-validation.md](docs/opencode-validation.md) | OpenCode/DeepSeek smoke and shared-PWD regression record |
 | [docs/operating.md](docs/operating.md) | One worked arrangement for running agents on real work |
 | [docs/plan.md](docs/plan.md) | Implementation order, with exit criteria |
 
@@ -170,6 +198,9 @@ npm test
 
 No models and no network: the agent CLIs are stood in for by a scripted fake, and the parsers
 are tested against real captured output in `test/fixtures/`.
+
+The manual OpenCode/DeepSeek smoke is `test/opencode-smoke.sh`; its commands, environment
+and recorded results are in [docs/opencode-validation.md](docs/opencode-validation.md).
 
 ## License
 

@@ -86,10 +86,10 @@ test("unparseable output is refused rather than guessed at", () => {
   assert.equal(codex.parse('{"type":"error","message":"nope"}'), null);
 });
 
-test("both agents are built in", () => {
+test("all agents are built in", () => {
   assert.deepEqual(
     builtinAgents.map((agent) => agent.name),
-    ["claude", "codex"],
+    ["claude", "codex", "opencode"],
   );
 });
 

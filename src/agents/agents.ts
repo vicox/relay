@@ -6,6 +6,7 @@
 
 import { claude } from "./claude.ts";
 import { codex } from "./codex.ts";
+import { opencode } from "./opencode.ts";
 
 export type AgentEvent = {
   /** The id this agent's own CLI uses for the conversation. */
@@ -29,4 +30,4 @@ export type Agent = {
  * The agents Relay ships with. The core uses whatever list it is handed, which
  * is how tests substitute a fake without a registry to mutate.
  */
-export const builtinAgents: Agent[] = [claude, codex];
+export const builtinAgents: Agent[] = [claude, codex, opencode];
