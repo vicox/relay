@@ -67,6 +67,11 @@ cannot hand work to anyone.
    { "permissions": { "allow": ["Bash(relay *)"] } }
    ```
 
+   That grant is the way back to Relay and nothing more. Whatever else an agent is expected
+   to do — `Bash(git *)`, `Bash(gh *)`, anything with side effects — has to be granted the
+   same way, and under `-p` a missing grant is a denial rather than a prompt. Relay does not
+   widen it: no permission flag is ever passed to any agent.
+
 3. **Codex may reach it.** Relay listens on loopback and Codex's default sandbox blocks that,
    so Codex needs `sandbox_mode = "workspace-write"` with `network_access = true`. Rather than
    loosening the operator's own Codex, give Relay's sessions their own Codex home and point
@@ -182,6 +187,7 @@ Relay only carried text between addresses.
 | [docs/agent-cli-notes.md](docs/agent-cli-notes.md) | What the agent CLIs actually do, measured |
 | [docs/opencode-plan.md](docs/opencode-plan.md) | The OpenCode adapter plan and measured V2 contract |
 | [docs/opencode-validation.md](docs/opencode-validation.md) | OpenCode/DeepSeek smoke and shared-PWD regression record |
+| [docs/operating.md](docs/operating.md) | One worked arrangement for running agents on real work |
 | [docs/plan.md](docs/plan.md) | Implementation order, with exit criteria |
 
 ## Tests
@@ -195,3 +201,7 @@ are tested against real captured output in `test/fixtures/`.
 
 The manual OpenCode/DeepSeek smoke is `test/opencode-smoke.sh`; its commands, environment
 and recorded results are in [docs/opencode-validation.md](docs/opencode-validation.md).
+
+## License
+
+Relay is licensed under the MIT License. See [LICENSE](LICENSE) for the full text.
