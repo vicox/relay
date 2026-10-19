@@ -100,10 +100,15 @@ export class Sessions {
     return true;
   }
 
-  /** Record the id the agent's CLI gave this conversation. */
+  /**
+   * Record the id the agent's CLI gave this conversation. The first id wins:
+   * a later event from another session must not rebind an established
+   * conversation. All three adapters emit the same id for every event of a
+   * turn, so this only guards against an anomalous stream.
+   */
   bind(session: string, nativeId: string): void {
     const record = this.#must(session);
-    if (record.nativeId === nativeId) return;
+    if (record.nativeId !== null) return;
     record.nativeId = nativeId;
     this.#flush();
   }

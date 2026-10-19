@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -232,6 +232,19 @@ test("a missing CLI is reported as a failed turn, not a crash", async () => {
   const lastTurn = core.status("no-such-command-anywhere", session).lastTurn;
   assert.equal(lastTurn?.ok, false);
   assert.match(String(lastTurn?.error), /could not run no-such-command-anywhere/);
+});
+
+test("a turn's cwd and PWD both match the session", async () => {
+  // realpathSync keeps the expected value in the same form as process.cwd();
+  // on macOS /var is a symlink to /private/var.
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "relay-cwd-"));
+  const { core } = relay(fake(["--id", "n", "--cwd"]));
+  const { session } = core.start("fake", dir);
+
+  core.send("fake", session, "where");
+  const said = JSON.parse(await settle(core, session)) as { cwd: string; pwd: string };
+
+  assert.deepEqual(said, { cwd: dir, pwd: dir });
 });
 
 test("two sessions run concurrently", async () => {

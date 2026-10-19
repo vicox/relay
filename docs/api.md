@@ -19,7 +19,7 @@ These signatures are the whole API. Everything below is how they are reached.
 
 | Caller | Reaches Relay by | Because |
 | --- | --- | --- |
-| Claude Code, Codex | `relay` CLI | Both already run shell commands. Nothing to configure. |
+| Claude Code, Codex, OpenCode (Relay-launched) | `relay` CLI | They can run shell commands; the `relay` shim must be on the PATH Relay passes to them. |
 | ChatGPT | MCP tools | It has no shell on this machine; MCP connectors are how it calls anything. |
 
 Both front doors are thin adapters over the same functions. The MCP tool list is generated
@@ -45,6 +45,8 @@ arrives, so it fails only on an unknown agent (`unknown_agent`) or an unreadable
 (`bad_cwd`). `cwd` defaults to Relay's own working directory.
 
 Session ids are UUIDv4, which is also the form Claude Code accepts for `--session-id`.
+Codex and OpenCode assign their own native ids; Relay's UUID remains the address in every
+case.
 
 ## send
 
@@ -125,8 +127,10 @@ session stays addressable and the next `send` resumes it. On an idle session thi
 with `interrupted: false`.
 
 An interrupted turn is recorded as unsuccessful — `lastTurn.ok = false` — whatever exit code
-the CLI happens to return. Claude exits 0 after SIGINT and Codex exits 1, and neither number
-matters: Relay sent the signal, so it already knows how the turn ended.
+the CLI happens to return. Claude exits 0 after SIGINT, Codex exits 1, and OpenCode exits
+130; none of those numbers matters. Relay sent the signal, so it already knows how the turn
+ended. For OpenCode, SIGINT aborts the shared-service turn; a SIGKILL to the client can leave
+that turn running, so the SIGINT path is the normal one.
 
 ## status
 
@@ -168,6 +172,9 @@ relay read claude 9f1c --wait
 relay status claude 9f1c
 relay interrupt claude 9f1c
 relay list
+
+relay start opencode                         # same five operations, other agent
+relay ask opencode 9f1c "Summarize this repo"
 ```
 
 One convenience, resolved entirely in the client — send, then read until the session goes
@@ -219,11 +226,15 @@ Its entire security posture is that it is not reachable.
 - What remains true regardless: anything that can reach the port can run agent CLIs with the
   operator's credentials. That is the boundary worth thinking about, and it is drawn outside
   Relay.
-- Relay passes no permission, sandbox or credential flags to any agent, and it neither
-  inspects nor edits an agent's environment or configuration. What an agent may do, and as
-  whom, is set where that agent already keeps it — Claude Code's settings, Codex's
-  `config.toml`, and the environment `relay serve` was started in. Relay inherits all of it
-  and chooses none of it.
+- Relay passes no permission, sandbox or credential flags to any agent. It inherits the
+  agent environment but explicitly overrides `PWD` with the session's `cwd`; otherwise it
+  neither inspects nor edits an agent's environment or configuration. What an agent may do,
+  and as whom, is set where that agent already keeps it — Claude Code's settings, Codex's
+  `config.toml`, OpenCode's `permissions`, and the environment `relay serve` was started
+  in. Relay inherits the rest and chooses none of the policy.
+- OpenCode V2's default permissions are permissive: the base policy allows every action,
+  including shell execution with the host user's authority and `external_directory`
+  access. Relay does not narrow that policy; the operator's OpenCode configuration does.
 - The consequence is worth stating plainly rather than discovering: **an agent that is not
   permitted to run `relay` cannot hand work to another agent.** Agent-to-agent handoff is
   something the operator enables, not something Relay grants. The prerequisites are in the

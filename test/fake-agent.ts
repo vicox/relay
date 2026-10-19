@@ -3,6 +3,7 @@
 // from these flags, so the fast suite never calls a model.
 //
 //   --id <id>          report a native session id (omit it to stay unbound)
+//   --cwd              say process.cwd() and process.env.PWD as JSON text
 //   --text <s>         say something (repeatable)
 //   --echo-stdin       say exactly what arrived on stdin
 //   --replay <file>    write a recorded capture back out verbatim
@@ -52,6 +53,10 @@ if (onSigint !== undefined) process.on("SIGINT", () => process.exit(Number(onSig
 
 const id = value("id");
 if (id) say({ type: "session", id });
+
+if (flag("cwd")) {
+  say({ type: "text", text: JSON.stringify({ cwd: process.cwd(), pwd: process.env.PWD ?? null }) });
+}
 
 if (flag("noise")) {
   process.stdout.write("not json at all\n");

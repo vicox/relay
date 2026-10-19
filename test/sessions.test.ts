@@ -95,6 +95,16 @@ test("a waiter is woken by a turn ending", async () => {
   assert.equal(sessions.read(session, 0).text, "");
 });
 
+test("the first native id wins; a later different id does not rebind", () => {
+  const { sessions } = store();
+  const session = sessions.create("opencode", "/tmp/one");
+
+  sessions.bind(session.session, "ses_first");
+  sessions.bind(session.session, "ses_second");
+
+  assert.equal(sessions.get("opencode", session.session)?.nativeId, "ses_first");
+});
+
 test("a reload from disk preserves addresses and bindings", () => {
   const { home, sessions } = store();
   const claude = sessions.create("claude", "/tmp/one");

@@ -50,6 +50,9 @@ export function run(options: RunOptions): RunningTurn {
 
   const child = spawn(agent.name, argv, {
     cwd: session.cwd,
+    // PWD is part of the contract, not decoration: OpenCode resolves its
+    // project Location and tool cwd from PWD, not from process.cwd().
+    env: { ...process.env, PWD: session.cwd },
     stdio: ["pipe", "pipe", "pipe"],
   });
 

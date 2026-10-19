@@ -87,9 +87,10 @@ That same warning names the rule: Claude Code prefers `ANTHROPIC_API_KEY` (or an
 credential in the environment) over an existing claude.ai login. Measured during Step 4 — a
 turn failed with `Credit balance is too low` on exit 1 while the login itself was fine.
 
-Relay inherits the environment `relay serve` was started in and does not touch it, so this is
-an operator decision, not an agent's and not Relay's. To use a claude.ai subscription, start
-Relay in an environment where those variables are unset:
+Relay inherits the environment `relay serve` was started in (except `PWD`, which it sets to
+the session cwd) and does not touch authentication variables, so this is an operator
+decision, not an agent's and not Relay's. To use a claude.ai subscription, start Relay in an
+environment where those variables are unset:
 
 ```sh
 env -u ANTHROPIC_API_KEY relay serve
@@ -174,15 +175,164 @@ carrying the stderr tail is what makes this diagnosable rather than mysterious.
 
 ---
 
+## OpenCode
+
+Captured 2026-10-19 on macOS with `opencode` 2.0.32. Fixtures are
+`test/fixtures/opencode-*.jsonl`. This is the contract that replaces the 1.19.3
+assumptions in the plan.
+
+### argv
+
+```sh
+# first turn
+opencode run --format json
+# later turns
+opencode run --format json --session <ses_…>
+```
+
+The prompt arrives on **stdin**, with no positional message. Confirmed by the first and
+resume captures.
+
+OpenCode assigns its own session id and reveals it in the stream. Relay must create the
+first turn **without** `--session`: V2 accepts a caller-supplied `ses_…` id and documents
+create-if-missing, but in our probe the newly created session used a free model and the
+turn failed instead of inheriting the configured model. A UUID is rejected outright
+(`Expected a string starting with "ses"`), so Relay's own session id cannot be the native
+id.
+
+### Reading the stream
+
+| Fact | Where |
+| --- | --- |
+| Session id | every event belonging to a session carries `sessionID`; `ses_…` |
+| Agent text | `{"type":"text"}` → `part.type == "text"` → `part.text` |
+| Tool work | `{"type":"tool_use"}` → `part.type == "tool"`, output in `part.state.output` |
+| Turn boundaries | `step_start`, `step_finish`; some successful turns emit neither |
+| Failure | `{"type":"error"}`; belongs in `lastTurn`, not output |
+
+The first event of a turn may be a `text` event with no `step_start` before it. Text
+arrives as complete parts, not deltas; a 120-word answer was one event. A text value
+containing a newline is escaped and stays one JSONL line. `tool_use` was emitted when the
+tool **completed**, not when it started, so it cannot be used as a start marker.
+
+### Exit codes
+
+| Outcome | Exit | Notes |
+| --- | --- | --- |
+| Success | 0 | |
+| SIGINT | **130** | shared-service turn and tool abort; native session remains resumable |
+| Invalid model/provider | 1 | `error` event on stdout, stderr empty |
+| Permission `ask` | 0 | auto-rejected; stderr says `auto-rejecting`; the model may continue |
+
+SIGINT is the normal interrupt: it aborts the OpenCode turn even though the client exits
+with code 130 rather than by signal. SIGKILL is different: the client dies but a shared
+background-service turn keeps running. `--standalone` runs a private server that dies with
+the client.
+
+### Working directory
+
+OpenCode resolves its project Location and tool cwd from `PWD`, not from
+`process.cwd()`. Measured by spawning `opencode run` with a cwd different from `PWD`:
+
+```text
+cwd = /tmp/…/mismatch
+PWD = /Users/vicox/relay-work
+session location and shell `pwd` = /Users/vicox/relay-work
+
+cwd = /tmp/…/match
+PWD = /tmp/…/match
+shell `pwd` = /tmp/…/match
+```
+
+Relay therefore sets `PWD` to the session cwd. For comparison, Claude Code 2.1.301 stores
+its transcript under the process cwd, and Codex 0.160.0's shell tool used the process cwd
+in a mismatched-`PWD` probe, so the change does not move their project state.
+
+### Background service, sessions and permissions
+
+V2 discovers or starts one per-user background service; `opencode run` is a client.
+`--standalone` starts a private server, `--server` connects to an explicit one, and
+`opencode service set disabled true` makes private servers the default. Relay manages
+none of this and passes no service flag.
+
+Sessions live in OpenCode's SQLite database. `opencode session export <id>` replaces the
+old `opencode export`; `opencode session list` is project-scoped and `opencode session
+delete` deletes a session Relay deliberately leaves alone. Resume worked after a service
+stop and across a shared/standalone switch.
+
+V2 permissions are an ordered `permissions` array (`shell`, `subagent`, `edit`, …). In
+`opencode run`, `ask` is auto-rejected with
+`permission requested: shell (…); auto-rejecting`; the turn continues and exits 0. A
+denied `shell` can still be routed around through `execute`/Code Mode or a subagent.
+`external_directory` is allowed by default in V2 (V1 asked), and `doom_loop` is not a V2
+Core permission action.
+
+### Relay handoff
+
+Measured with an isolated OpenCode service and a target Codex session. A Relay-launched
+OpenCode session, with a `relay` shim on the PATH Relay passes to `opencode`, ran:
+
+```sh
+relay ask codex <target-id> "Reply with exactly handoff-pong and nothing else."
+```
+
+It returned `handoff-pong`. This uses the existing Relay CLI/shim; no new integration was
+added. Required configuration: the shim must be on the `opencode run` child's PATH (Relay's
+environment), `RELAY_HOME`/`RELAY_PORT` must be available to it, and OpenCode must be
+allowed to run shell commands. An independently launched OpenCode session needs the shim
+and these variables in its own environment; Relay's environment is not inherited by the
+shared service's shell tools. The README shim only knows Claude and Codex session ids, so
+OpenCode's nested send is unsigned; delivery does not require a `from`.
+
+### Shared service environment
+
+Measured with an isolated service on 2.0.32:
+
+- When Relay started the shared service, `ps -E` confirmed Relay's `RELAY_PORT`,
+  `RELAY_HOME`, `CODEX_HOME` and a marker variable in the **service process**. The service
+  inherits the first client's process environment; `PATH` is part of that process
+  environment.
+- Shell tools did **not** use the service's environment. With the service started with
+  `RELAY_M2_MARKER=from-service`, a client started with `RELAY_M2_MARKER=from-client` ran
+  `printenv RELAY_M2_MARKER` and saw `from-client`. An independent client with no marker
+  saw no output even though the service had one.
+- If the service was already running, Relay reused it instead of starting a new one; the
+  shell tool still used the client's environment. The service process environment is
+  fixed when the service starts.
+- The working directory/Location remained per-client, as measured in the PWD section.
+
+Residual uncertainty: server-side plugins, LSP servers, MCP servers, or other processes
+that read the service process environment were not exhaustively tested. To keep that
+environment clean, start OpenCode once from a normal shell before Relay, or run with
+private servers. If `relay serve` itself is started from inside an OpenCode session, it
+inherits `OPENCODE`, `OPENCODE_SESSION_ID` and `OPENCODE_TERMINAL`; child OpenCode
+clients may attach to that session's service. Start Relay from a plain shell, or unset
+those variables in an isolated test.
+
+### Permissive defaults
+
+OpenCode V2's base policy allows every action unless configured otherwise. In particular,
+shell tools run with the host user's filesystem, process and network authority, and
+`external_directory` is allowed by default. In `opencode run`, an `ask` is auto-rejected
+and the tool is skipped. Relay passes no permission flags; the operator's OpenCode
+configuration is the only boundary.
+
+Relay does not handle SIGINT/SIGTERM itself. Before stopping `relay serve`, interrupt
+every busy session and wait for idle; otherwise an OpenCode client can be orphaned and its
+shared-service turn can continue.
+
+---
+
 ## Agents cannot call Relay by default
 
-Measured during Step 6, when both agents were asked to run `relay list`. Neither could, for
-different reasons, because Relay passes no permission or sandbox flags:
+Measured during Step 6 for Claude and Codex; OpenCode was measured later. Relay passes no
+permission or sandbox flags, so the operator configures access:
 
 | Agent | What happened | What it needs |
 | --- | --- | --- |
 | Claude Code | Bash denied — a permission prompt cannot be answered under `-p` | `permissions.allow: ["Bash(relay *)"]` in `~/.claude/settings.json` |
 | Codex | the command ran, but the sandbox blocked the loopback connection | `sandbox_mode = "workspace-write"` with `[sandbox_workspace_write] network_access = true` |
+| OpenCode | default shell permission allowed a nested `relay ask` | `relay` shim on Relay's PATH, plus `RELAY_HOME`/`RELAY_PORT`; measured handoff above |
 
 `relay` must also be on the spawned agent's `PATH`, which is the `PATH` `relay serve` was
 started with, since children inherit it.
