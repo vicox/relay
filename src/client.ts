@@ -39,7 +39,13 @@ export async function runClient(argv: string[], port: number): Promise<number> {
 
       case "send": {
         const [agent, session] = await address(client, words);
-        await call(client, "send", { agent, session, text: message(words, 2), from: sender(flags) });
+        await call(client, "send", {
+          agent,
+          session,
+          text: message(words, 2),
+          from: sender(flags),
+          model: flags.get("model"),
+        });
         break;
       }
 
@@ -59,7 +65,13 @@ export async function runClient(argv: string[], port: number): Promise<number> {
         // Sugar over send + read: no operation of its own, just the loop every
         // calling agent would otherwise have to write.
         const [agent, session] = await address(client, words);
-        const sent = await call(client, "send", { agent, session, text: message(words, 2), from: sender(flags) });
+        const sent = await call(client, "send", {
+          agent,
+          session,
+          text: message(words, 2),
+          from: sender(flags),
+          model: flags.get("model"),
+        });
         let after = Number(sent.cursor ?? 0);
         for (;;) {
           const reply = await call(client, "read", { agent, session, after, wait: 30_000 });
@@ -155,9 +167,10 @@ function message(args: string[], at: number): string {
  * and hand it to the agent, which is exactly what must never happen.
  *
  * `port` is here because `relay serve --port` and the client commands are read
- * from the same argv.
+ * from the same argv. `model` is here because `--model sonnet` must choose the
+ * model, not end the message with the word "sonnet".
  */
-const VALUED_FLAGS = new Set(["from", "cwd", "after", "port"]);
+const VALUED_FLAGS = new Set(["from", "cwd", "after", "port", "model"]);
 
 function parseArgs(argv: string[]): { words: string[]; flags: Map<string, string> } {
   const words: string[] = [];
@@ -188,15 +201,16 @@ export function usage(): string {
     "relay serve [--port 7717]",
     "",
     "relay start <agent> [--cwd <dir>]",
-    "relay send <agent> <session> <text...> [--from <who>]",
+    "relay send <agent> <session> <text...> [--from <who>] [--model <name>]",
     "relay read <agent> <session> [--after <n>] [--wait]",
-    "relay ask <agent> <session> <text...> [--from <who>]",
+    "relay ask <agent> <session> <text...> [--from <who>] [--model <name>]",
     "relay status <agent> <session>",
     "relay interrupt <agent> <session>",
     "relay forget <agent> <session>",
     "relay list",
     "",
     "A session id may be any unique prefix. --from defaults to $RELAY_FROM.",
+    "--model is claude only: opus, sonnet or haiku, for that turn, in the same conversation.",
     "",
   ].join("\n");
 }

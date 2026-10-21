@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import type { Agent } from "../src/agents/agents.ts";
 import { Core } from "../src/core.ts";
 import { serve } from "../src/mcp.ts";
 import { fake, putFakeOnPath, tempHome } from "./fake.ts";
@@ -25,8 +26,9 @@ putFakeOnPath();
 /** The agent repeats its stdin, so its output is the message it was given. */
 const ECHO = ["--id", "native-cli", "--echo-stdin"];
 
-async function relay(agentArgv: string[] = ECHO) {
-  const core = new Core({ home: tempHome(), agents: [fake(agentArgv)], log: () => {}, killAfterMs: 100 });
+async function relay(agent: string[] | Agent = ECHO) {
+  const agents = [Array.isArray(agent) ? fake(agent) : agent];
+  const core = new Core({ home: tempHome(), agents, log: () => {}, killAfterMs: 100 });
   const http = await serve(core, 0);
   const port = String((http.address() as { port: number }).port);
 
@@ -183,6 +185,67 @@ test("every other invocation parses as it did before", async () => {
     await cli("interrupt", "fake", session); // idle: a no-op, still exit 0
     await cli("forget", "fake", session);
     assert.equal((await cli("list")).trim(), "");
+  } finally {
+    await close();
+  }
+});
+
+/** Echoes its stdin, after saying which model its argv named. */
+const CHOOSY_ARGV = (model: string | null) => [
+  "--id",
+  "native-cli",
+  "--launched-on",
+  `exact-${model ?? "default"}`,
+  "--text",
+  `model ${model ?? "default"}`,
+  "--echo-stdin",
+];
+const CHOOSY: Agent = {
+  ...fake(ECHO),
+  models: ["sonnet"],
+  start: (_sessionId, model) => CHOOSY_ARGV(model),
+  resume: (_nativeId, model) => CHOOSY_ARGV(model),
+};
+
+test("--model chooses the model and is never a word of the message", async () => {
+  const { core, cli, settled, close } = await relay(CHOOSY);
+  try {
+    const session = (await cli("start", "fake")).trim();
+    await cli("send", "fake", session, "hello", "--model", "sonnet", "--from", "codex/abc");
+    assert.equal(await settled("fake", session), "model sonnet\n\nhello");
+    assert.equal(core.status("fake", session).lastTurn?.from, "codex/abc");
+
+    // Before the message too, and through ask.
+    const asked = await cli("ask", "fake", session, "--model", "sonnet", "and", "again");
+    assert.equal(asked.trim(), "model sonnet\n\nand again");
+
+    // Without the flag, no model is named.
+    const plain = await cli("ask", "fake", session, "plain");
+    assert.equal(plain.trim(), "model default\n\nplain");
+  } finally {
+    await close();
+  }
+});
+
+test("a model the agent does not take fails the command and runs nothing", async () => {
+  const { core, cli, close } = await relay(CHOOSY);
+  try {
+    const session = (await cli("start", "fake")).trim();
+    for (const argv of [
+      ["send", "fake", session, "hello", "--model", "opus"],
+      ["ask", "fake", session, "hello", "--model", "opus"],
+      // A dangling --model is a refusal, not a turn on the default model.
+      ["send", "fake", session, "hello", "--model"],
+    ]) {
+      await assert.rejects(
+        cli(...argv),
+        (error: { code?: unknown; stderr?: unknown }) =>
+          error.code === 1 && /bad_request: fake takes model sonnet/.test(String(error.stderr)),
+        argv.join(" "),
+      );
+    }
+    assert.equal(core.status("fake", session).lastTurn, null);
+    assert.equal(core.status("fake", session).cursor, 0);
   } finally {
     await close();
   }

@@ -3,6 +3,7 @@
 // from these flags, so the fast suite never calls a model.
 //
 //   --id <id>          report a native session id (omit it to stay unbound)
+//   --launched-on <m>  say, with the id, which model the turn was launched on
 //   --cwd              say process.cwd() and process.env.PWD as JSON text
 //   --text <s>         say something (repeatable)
 //   --echo-stdin       say exactly what arrived on stdin
@@ -52,7 +53,7 @@ const onSigint = value("exit-on-sigint");
 if (onSigint !== undefined) process.on("SIGINT", () => process.exit(Number(onSigint)));
 
 const id = value("id");
-if (id) say({ type: "session", id });
+if (id) say({ type: "session", id, model: value("launched-on") });
 
 if (flag("cwd")) {
   say({ type: "text", text: JSON.stringify({ cwd: process.cwd(), pwd: process.env.PWD ?? null }) });

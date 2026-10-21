@@ -126,27 +126,39 @@ make a decision the other cannot see.
 The only abstraction in Relay, and it exists because agents differ.
 
 ```ts
-type AgentEvent = { nativeId?: string; text?: string }
+type AgentEvent = { nativeId?: string; text?: string; launchedOn?: string; answeredBy?: string | null }
 
 type Agent = {
   name: string
-  start: (sessionId: string) => string[]     // argv for the first turn
-  resume: (nativeId: string) => string[]     // argv for every later turn
-  parse: (line: string) => AgentEvent | null // one JSONL line → nothing we care about, or a fact
+  start: (sessionId: string, model: string | null) => string[] // argv for the first turn
+  resume: (nativeId: string, model: string | null) => string[] // argv for every later turn
+  models?: readonly string[]                    // what a send may name; absent: nothing
+  parse: (line: string) => AgentEvent | null    // one JSONL line → nothing we care about, or a fact
 }
 ```
 
-Three pure functions and a name. The adapter never spawns, never writes, never keeps state —
-`turn.ts` owns all of that, once. Adding an agent is one file and one line in `agents.ts`.
+Three pure functions, a name, and the models a send may name. The adapter never spawns, never
+writes, never keeps state — `turn.ts` owns all of that, once. Adding an agent is one file and
+one line in `agents.ts`.
 
 Two binding styles fall out of `start` alone: Claude's returns `--session-id <sessionId>`
 and its `parse` confirms the id it was given; Codex and OpenCode ignore the argument and
 their `parse` discovers the id the CLI assigned. No capability flags, no branches in
 `core`.
 
-`parse` is deliberately lossy: it reports only the session id and assistant text. Tool calls,
-usage and thinking are dropped. That is the boundary where Relay refuses to become a
-transcript store.
+`models` is the one list `core` consults: `core.send` refuses a model that is not in it
+before anything runs, so `start` and `resume` only ever see `null` or a name they declared.
+Only Claude declares any, and it places `--model <alias>` beside `--session-id` or
+`--resume`, so a model turn is the same conversation as any other
+([api.md](api.md#choosing-a-model)).
+
+`parse` is deliberately lossy: it reports only the session id, assistant text, and which
+exact model the turn was launched on and answered by. Tool calls, usage and thinking are
+dropped. That is the boundary where Relay refuses to become a transcript store. The models are
+there for one check: a turn that named a model is stopped and failed if an answer comes from a
+different model than the launch — a fallback the caller did not ask for — or if either is not
+reported, because an unchecked turn is not one Relay can vouch for. An agent that declares
+`models` therefore has to report both.
 
 ## Running one turn
 
@@ -154,23 +166,27 @@ transcript store.
 send("claude", "9f1c…", text)
   │
   ├─ core.send
+  │   ├─ model not in agent.models? → bad_request, nothing happens
   │   ├─ session busy? → busy error, nothing happens
   │   ├─ cursor = current output length                → returned to the caller now
-  │   ├─ log: send claude/9f1c ← codex/3b7e, 412 bytes
+  │   ├─ log: send claude/9f1c ← codex/3b7e, 412 bytes [, model]
   │   ├─ lastTurn = { ok: false, error: "in flight", from }  → to disk before spawning
   │   ├─ state = busy
-  │   └─ turn.run(session, text)  (not awaited)
-  │        ├─ argv = nativeId ? agent.resume(nativeId) : agent.start(sessionId)
+  │   └─ turn.run(session, text, model)  (not awaited)
+  │        ├─ argv = nativeId ? agent.resume(nativeId, model) : agent.start(sessionId, model)
   │        ├─ spawn(agent.name, argv, { cwd: session.cwd,
   │        │                              env: { ...process.env, PWD: session.cwd } })
   │        ├─ stdin ← text, then closed
   │        ├─ stdout → split lines → agent.parse
   │        │     ├─ { nativeId } → bind the session, flush to disk
+  │        │     ├─ { launchedOn } → the model the turn runs on
+  │        │     ├─ { answeredBy } → on a turn that named a model: not launchedOn, or
+  │        │     │                   either unknown → stop it, drop the rest
   │        │     └─ { text }     → append to the output buffer, wake waiters
   │        ├─ stderr → small ring buffer, used only for lastTurn.error
   │        └─ on exit → ok = we did not signal it, and code === 0
   │                     lastTurn = { ok, exitCode, error, endedAt, from }
-  │                     log: turn claude/9f1c ended, ok, 8.2s, 1.4kB out
+  │                     log: turn claude/9f1c ended, ok, 8.2s, 1.4kB out [, on <model>]
   │                     state = idle, wake waiters
   │
 read("claude", "9f1c…", after: cursor, wait: 30000)
@@ -190,7 +206,9 @@ Stop only after interrupting every busy session and waiting for it to go idle.
 The outcome is not read off the exit code alone. `turn.run` remembers whether *it* signalled
 the child, and a turn Relay interrupted is unsuccessful whatever the CLI returns — Claude exits
 0 after SIGINT, Codex exits 1, and neither number describes what happened. This lives in
-`turn.ts` and nowhere else: no new session state, no new field, just an honest `ok`.
+`turn.ts` and nowhere else: no new session state, no new field, just an honest `ok`. A turn
+Relay stops because its model switched, or could not be checked, is the same case with a
+different `error` that says which.
 
 Writing `lastTurn` as a failure *before* spawning is what makes a killed Relay tell the truth:
 if the process dies mid-turn, the recorded outcome already says the turn never finished, and

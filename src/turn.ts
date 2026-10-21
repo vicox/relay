@@ -23,6 +23,8 @@ export type RunOptions = {
   session: Session;
   text: string;
   from: string | null;
+  /** Already checked against agent.models; null leaves the CLI's default alone. */
+  model: string | null;
   sessions: Sessions;
   log: (line: string) => void;
   /** How long SIGINT is given before SIGKILL. */
@@ -32,16 +34,21 @@ export type RunOptions = {
 };
 
 export function run(options: RunOptions): RunningTurn {
-  const { agent, session, text, from, sessions, log } = options;
+  const { agent, session, text, from, model, sessions, log } = options;
   const id = session.session;
   const killAfterMs = options.killAfterMs ?? 2000;
   const startedAt = Date.now();
 
   // An unbound session has no conversation on the agent's side yet.
-  const argv = session.nativeId ? agent.resume(session.nativeId) : agent.start(id);
-  log(logLine("send", agent.name, id, `<- ${from ?? "-"}`, `${bytes(text.length)} in`));
+  const argv = session.nativeId ? agent.resume(session.nativeId, model) : agent.start(id, model);
+  const chosen = model ? `  model ${model}` : "";
+  log(logLine("send", agent.name, id, `<- ${from ?? "-"}`, `${bytes(text.length)} in${chosen}`));
 
   let interrupted = false;
+  /** Why Relay stopped the turn itself, when it was not asked to interrupt it. */
+  let abandoned: string | null = null;
+  /** The exact model the CLI says it launched the turn on. */
+  let launchedOn: string | null = null;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let produced = 0;
   let stderr = "";
@@ -80,6 +87,8 @@ export function run(options: RunOptions): RunningTurn {
   });
 
   function consume(line: string): void {
+    // Whatever arrives after Relay gave up on the turn is not the turn asked for.
+    if (abandoned) return;
     const trimmed = line.trim();
     if (!trimmed) return;
     let event;
@@ -90,6 +99,27 @@ export function run(options: RunOptions): RunningTurn {
     }
     if (!event) return;
     if (event.nativeId) sessions.bind(id, event.nativeId);
+    if (event.launchedOn) launchedOn ??= event.launchedOn;
+    // A turn that names a model is answered by that model or by nothing. A
+    // switch -- a fallback chain in the agent's settings, or a safety
+    // classifier's -- stops it before the other model says anything, and so
+    // does an answer nobody can check.
+    if (model && event.answeredBy !== undefined) {
+      const wrong =
+        launchedOn === null
+          ? unverifiable("which model it launched the turn on")
+          : event.answeredBy === null
+            ? unverifiable("which model answered")
+            : event.answeredBy !== launchedOn
+              ? `${model} was launched on ${launchedOn} but answered by ${event.answeredBy}; ` +
+                "a turn that names a model does not fall back"
+              : null;
+      if (wrong) {
+        abandoned = wrong;
+        stop();
+        return;
+      }
+    }
     if (event.text) {
       // An agent says several things in one turn; keep them apart. The gap
       // between one turn and the next is core's to write, before it reports the
@@ -106,13 +136,19 @@ export function run(options: RunOptions): RunningTurn {
       settled = true;
       clearTimeout(killTimer);
 
+      // A model turn that would otherwise succeed must at least have said which
+      // model it ran on.
+      if (model && launchedOn === null && !interrupted && failure === null && exitCode === 0) {
+        abandoned ??= unverifiable("which model it launched the turn on");
+      }
+
       // Relay sends the signal itself, so it never has to ask the exit code
       // whether a turn was interrupted. Claude exits 0 after SIGINT and Codex
       // exits 1; neither number describes what happened.
-      const ok = !interrupted && failure === null && exitCode === 0;
-      const error = interrupted
-        ? "interrupted"
-        : failure ?? (ok ? null : stderr.trim() || `exited with code ${exitCode}`);
+      const ok = !interrupted && abandoned === null && failure === null && exitCode === 0;
+      const error =
+        abandoned ??
+        (interrupted ? "interrupted" : failure ?? (ok ? null : stderr.trim() || `exited with code ${exitCode}`));
 
       const lastTurn: LastTurn = {
         ok,
@@ -130,8 +166,8 @@ export function run(options: RunOptions): RunningTurn {
           "turn",
           agent.name,
           id,
-          interrupted ? "interrupted" : ok ? "ok" : `failed (exit ${exitCode})`,
-          `${seconds(Date.now() - startedAt)}  ${bytes(produced)} out`,
+          abandoned ? "model check failed" : interrupted ? "interrupted" : ok ? "ok" : `failed (exit ${exitCode})`,
+          `${seconds(Date.now() - startedAt)}  ${bytes(produced)} out${launchedOn ? `  on ${launchedOn}` : ""}`,
         ),
       );
       resolve(lastTurn);
@@ -143,12 +179,20 @@ export function run(options: RunOptions): RunningTurn {
     child.on("error", (error: Error) => settle(null, `could not run ${agent.name}: ${error.message}`));
   });
 
+  function stop(): void {
+    child.kill("SIGINT");
+    killTimer = setTimeout(() => child.kill("SIGKILL"), killAfterMs);
+  }
+
+  function unverifiable(missing: string): string {
+    return `${agent.name} did not report ${missing}, so a turn that names ${model} cannot be verified`;
+  }
+
   return {
     interrupt: () => {
-      if (settled || interrupted) return;
+      if (settled || interrupted || abandoned) return;
       interrupted = true;
-      child.kill("SIGINT");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), killAfterMs);
+      stop();
     },
     done,
   };

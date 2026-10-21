@@ -75,13 +75,31 @@ export class Core {
 
   /**
    * Start a turn and return immediately. The cursor is where this turn's output
-   * begins, so a caller can read exactly what it caused.
+   * begins, so a caller can read exactly what it caused. A model applies to this
+   * turn only; without one the agent's CLI is not told about models at all.
    */
-  send(agent: string, session: string, text: string, from: string | null = null): { cursor: number; state: State } {
+  send(
+    agent: string,
+    session: string,
+    text: string,
+    from: string | null = null,
+    model: string | null = null,
+  ): { cursor: number; state: State } {
     if (typeof text !== "string" || text.length === 0) {
       throw new RelayError("bad_request", "a message needs text");
     }
     const record = this.#find(agent, session);
+    const definition = this.#agents.get(agent)!;
+    // Refused before anything happens: a model this agent cannot take must not
+    // quietly become a turn on whatever model it would have used instead.
+    if (model !== null && !definition.models?.includes(model)) {
+      throw new RelayError(
+        "bad_request",
+        definition.models
+          ? `${agent} takes model ${definition.models.join(", ")}, not ${JSON.stringify(model)}`
+          : `${agent} does not take a model`,
+      );
+    }
     if (this.#running.has(session)) {
       throw new RelayError("busy", "a turn is already in flight");
     }
@@ -103,10 +121,11 @@ export class Core {
     });
 
     const turn = run({
-      agent: this.#agents.get(agent)!,
+      agent: definition,
       session: record,
       text,
       from: sender,
+      model,
       sessions: this.#sessions,
       log: this.#log,
       killAfterMs: this.#killAfterMs,

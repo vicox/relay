@@ -9,6 +9,7 @@ import type { Server } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+import type { Agent } from "../src/agents/agents.ts";
 import { Core } from "../src/core.ts";
 import { MCP_PATH, OPERATIONS, serve } from "../src/mcp.ts";
 import { fake, putFakeOnPath, tempHome } from "./fake.ts";
@@ -17,8 +18,9 @@ putFakeOnPath();
 
 type Json = Record<string, unknown>;
 
-async function relay(agentArgv: string[]) {
-  const core = new Core({ home: tempHome(), agents: [fake(agentArgv)], log: () => {}, killAfterMs: 100 });
+async function relay(agent: string[] | Agent) {
+  const agents = [Array.isArray(agent) ? fake(agent) : agent];
+  const core = new Core({ home: tempHome(), agents, log: () => {}, killAfterMs: 100 });
   // Port 0 lets the OS pick, so tests never collide with a running relay.
   const http = await serve(core, 0);
   const port = (http.address() as { port: number }).port;
@@ -39,7 +41,7 @@ async function relay(agentArgv: string[]) {
     await new Promise<void>((done) => (http as Server).close(() => done()));
   };
 
-  return { call, client, close };
+  return { core, call, client, close };
 }
 
 test("the tool list is the operation table, and nothing else", async () => {
@@ -127,6 +129,46 @@ test("errors arrive as their documented codes", async () => {
 
     // Unknown tools are refused the same way, not with a protocol error.
     await assert.rejects(call("orchestrate", {}), (error: { code?: unknown }) => error.code === "bad_request");
+  } finally {
+    await close();
+  }
+});
+
+test("a model goes through send, and a bad one is refused", async () => {
+  const { core, call, client, close } = await relay({
+    ...fake([]),
+    models: ["sonnet"],
+    start: (_sessionId, model) => ["--id", "n", "--launched-on", "exact", "--text", `model ${model ?? "default"}`],
+    resume: (_nativeId, model) => ["--id", "n", "--launched-on", "exact", "--text", `model ${model ?? "default"}`],
+  });
+  try {
+    const send = (await client.listTools()).tools.find((tool) => tool.name === "send");
+    const model = (send?.inputSchema.properties as Record<string, Json>).model;
+    assert.equal(model.type, "string");
+    assert.match(String(model.description), /opus, sonnet or haiku/);
+    assert.ok(!send?.inputSchema.required?.includes("model"), "model is optional");
+
+    const session = String((await call("start", { agent: "fake" })).session);
+    const read = async (after: number) => {
+      for (;;) {
+        const reply = await call("read", { agent: "fake", session, after, wait: 2000 });
+        if (reply.state === "idle") return String(reply.text);
+      }
+    };
+
+    const first = await call("send", { agent: "fake", session, text: "a", model: "sonnet" });
+    assert.equal(await read(Number(first.cursor)), "model sonnet");
+    const second = await call("send", { agent: "fake", session, text: "b", model: null });
+    assert.equal(await read(Number(second.cursor)), "model default", "null is the same as omitted");
+
+    for (const bad of ["opus", "", 7, true]) {
+      await assert.rejects(
+        call("send", { agent: "fake", session, text: "c", model: bad }),
+        (error: { code?: unknown }) => error.code === "bad_request",
+        `model ${JSON.stringify(bad)} is refused, not dropped`,
+      );
+    }
+    assert.equal(core.status("fake", session).state, "idle", "no refused send started a turn");
   } finally {
     await close();
   }
