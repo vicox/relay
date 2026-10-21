@@ -41,6 +41,7 @@ Relay chooses the session id and passes it in, so the id is known before the fir
 | --- | --- |
 | Session id | every event carries `session_id`; canonically `{"type":"system","subtype":"init"}` |
 | Agent text | `{"type":"assistant"}` → `message.content[]`, blocks with `type == "text"` |
+| Model | launched on: `init` → `model`; answered with: `assistant` → `message.model`, where `parent_tool_use_id` is `null` ([Choosing a model](#choosing-a-model)) |
 | Turn end | `{"type":"result"}` with `subtype` `success` or `error_during_execution` |
 
 Text arrives as **complete messages, never fragments** — `--include-partial-messages` is off.
@@ -98,6 +99,65 @@ env -u ANTHROPIC_API_KEY relay serve
 
 Encoding the policy in Relay was considered and rejected: it would put one agent's
 authentication rules inside a component whose whole job is to know nothing about them.
+
+### Choosing a model
+
+```sh
+claude -p --output-format stream-json --verbose --model <alias> --session-id <uuid>
+claude -p --output-format stream-json --verbose --model <alias> --resume <uuid>
+```
+
+What `send(…, model)` relies on, from Claude Code's
+[CLI reference](https://code.claude.com/docs/en/cli-reference) and
+[model configuration](https://code.claude.com/docs/en/model-config) as of 2026-10-21 —
+**documented, not measured here**:
+
+| Fact | Source |
+| --- | --- |
+| `--model` takes an alias (`opus`, `sonnet`, `haiku`, …) or a full model name, and overrides the `model` setting and `ANTHROPIC_MODEL` | CLI reference, `--model` |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL`, `…_SONNET_MODEL`, `…_HAIKU_MODEL` set what each alias resolves to, and can sit in a settings file's `env` | model configuration |
+| `--resume` reuses the original session id; only `--fork-session` creates a new one | CLI reference, `--fork-session` |
+| A resumed session usually keeps the model it last used; `--model` on that launch takes precedence, and `ANTHROPIC_MODEL`, the `ANTHROPIC_DEFAULT_*` variables and third-party providers are exceptions | model configuration |
+| `--fallback-model` / the `fallbackModel` setting switch models when one is overloaded or unavailable | model configuration, fallback model chains |
+| Safety classifiers on Opus 5.5, Sonnet 5.5, Opus 5 and Fable re-run a flagged request on another model with no setting at all; `switchModelsOnFlag: false` turns that into a refusal under `-p` | model configuration, automatic model fallback |
+| `system/init` carries `model`; each `assistant` event carries `message.model` and `parent_tool_use_id`, `null` in the main conversation | Agent SDK TypeScript reference |
+
+What is measured is the half that does not involve `--model`: a plain `--resume` reports the
+same `session_id` the first turn bound (`claude-resume-turn.jsonl`), and every `assistant`
+event in the captures names its model (`message.model: "claude-opus-5"`) with
+`parent_tool_use_id: null`. The captures' `init` events were trimmed before `model` was
+needed, so its exact form — in particular whether it matches `message.model` character for
+character — is not yet measured. Relay relies on that match to tell a fallback from the model
+it asked for, and fails the turn when they differ, so a mismatch in form would show up as
+model turns failing with both names in `lastTurn.error`, not as a silent switch. An `init`
+without `model` — as in the trimmed captures — or a main-conversation message without
+`message.model` fails a model turn as unverifiable; replaying `claude-resume-turn.jsonl` on a
+`haiku` turn is the regression test for exactly that.
+
+Claude Code also writes some error messages itself, as `assistant` events with
+`message.model: "<synthetic>"`. That value is from Claude Code's transcripts, not from a
+capture here; the parser treats it as no model.
+
+The live check still to be run, by someone whose session may run `claude` — on 2026-10-21
+the implementing session could not, because a non-interactive Claude Code session may not
+spawn `claude` without a permission grant:
+
+```sh
+id=$(uuidgen | tr A-Z a-z)
+echo "Remember the word ping-1." | claude -p --output-format stream-json --verbose --session-id "$id" \
+  | jq -c 'select(.type=="system" and .subtype=="init") | {session_id, model}'
+echo "What word did I give you?" | claude -p --output-format stream-json --verbose --model haiku --resume "$id" \
+  | jq -c 'select((.type=="system" and .subtype=="init") or .type=="assistant" or .type=="result")
+           | {type, session_id, model, answered: .message.model, parent_tool_use_id, result}'
+echo "And now?" | claude -p --output-format stream-json --verbose --resume "$id" \
+  | jq -c 'select(.type=="system" and .subtype=="init") | {session_id, model}'
+```
+
+Expected: one `session_id` throughout, the answer `ping-1` from the `haiku` turn, `init.model`
+on that turn naming the exact id `ANTHROPIC_DEFAULT_HAIKU_MODEL` pins and equal to every
+`message.model` with a `null` `parent_tool_use_id`, and — unless an override applies — the
+third turn still on that model. An unusable id in `ANTHROPIC_DEFAULT_HAIKU_MODEL` should then
+fail the second turn on a non-zero exit — the exit code and stderr are not yet recorded.
 
 ---
 

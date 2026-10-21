@@ -29,8 +29,10 @@ function fake(start: string[], resume: string[] = start): Agent {
     start: (sessionId) => start.map((arg) => arg.replaceAll("{session}", sessionId)),
     resume: (nativeId) => resume.map((arg) => arg.replaceAll("{native}", nativeId)),
     parse: (line): AgentEvent | null => {
-      const event = JSON.parse(line) as { type?: string; id?: string; text?: string };
-      if (event.type === "session" && event.id) return { nativeId: event.id };
+      const event = JSON.parse(line) as { type?: string; id?: string; model?: string; text?: string };
+      if (event.type === "session" && event.id) {
+        return { nativeId: event.id, ...(event.model ? { launchedOn: event.model } : {}) };
+      }
       if (event.type === "text" && typeof event.text === "string") return { text: event.text };
       return null;
     },
@@ -138,6 +140,135 @@ test("a busy session rejects another send without queueing it", async () => {
   // Nothing was queued: the rejected message never runs.
   assert.equal(await settle(core, session), "only turn");
   assert.equal(core.status("fake", session).state, "idle");
+});
+
+/**
+ * An agent that takes models and says which argv each turn got. Resuming
+ * reports the same id, as Claude does, and every turn says which model it was
+ * launched on; `broken` stands for a model the CLI cannot use, so the turn
+ * fails the way an unusable model would.
+ */
+function choosy(extra: string[] = []): Agent {
+  const on = (model: string | null) => ["--launched-on", `exact-${model ?? "default"}`];
+  return {
+    ...fake([]),
+    models: ["big", "small", "broken"],
+    start: (_sessionId, model) => ["--id", "native-m", ...on(model), "--text", `start ${model ?? "default"}`, ...extra],
+    resume: (nativeId, model) =>
+      model === "broken"
+        ? ["--id", nativeId, "--stderr", "broken is not available", "--exit", "1"]
+        : ["--id", nativeId, ...on(model), "--text", `resume ${nativeId} ${model ?? "default"}`, ...extra],
+  };
+}
+
+test("a model reaches the agent for one turn, in the same conversation", async () => {
+  const { core, log } = relay(choosy());
+  const { session } = core.start("fake");
+
+  core.send("fake", session, "one");
+  assert.equal(await settle(core, session), "start default", "no model: argv as it always was");
+
+  const second = core.send("fake", session, "two", null, "small");
+  assert.equal(await settle(core, session, second.cursor), "resume native-m small");
+  assert.equal(core.status("fake", session).nativeId, "native-m", "the conversation the first turn bound");
+  assert.equal(core.status("fake", session).lastTurn?.ok, true);
+
+  // Relay does not remember the model; the next send without one passes none.
+  const third = core.send("fake", session, "three");
+  assert.equal(await settle(core, session, third.cursor), "resume native-m default");
+
+  assert.ok(
+    log.some((line) => line.includes("send") && line.includes("model small")),
+    `the log records the model a turn asked for: ${JSON.stringify(log)}`,
+  );
+
+  // A first turn may choose one too.
+  const other = core.start("fake");
+  core.send("fake", other.session, "one", null, "big");
+  assert.equal(await settle(core, other.session), "start big");
+});
+
+test("a turn whose model fails is a failed turn, with no fallback and no new conversation", async () => {
+  const { core } = relay(choosy());
+  const { session } = core.start("fake");
+  core.send("fake", session, "one");
+  await settle(core, session);
+
+  const failed = core.send("fake", session, "two", null, "broken");
+  // A retry without the model, or a fresh start, would have said something.
+  assert.equal(await settle(core, session, failed.cursor), "");
+  const { lastTurn, nativeId } = core.status("fake", session);
+  assert.equal(lastTurn?.ok, false);
+  assert.equal(lastTurn?.exitCode, 1);
+  assert.match(String(lastTurn?.error), /broken is not available/);
+  assert.equal(nativeId, "native-m");
+
+  // And the session resumes the same conversation afterwards.
+  const next = core.send("fake", session, "three", null, "big");
+  assert.equal(await settle(core, session, next.cursor), "resume native-m big");
+});
+
+test("a model turn that never says what it ran on fails; a turn without one does not", async () => {
+  const { core } = relay({ ...fake(["--id", "native-q", "--text", "said"]), models: ["big"] });
+  const { session } = core.start("fake");
+
+  core.send("fake", session, "one");
+  await settle(core, session);
+  assert.equal(core.status("fake", session).lastTurn?.ok, true, "nothing to verify without a model");
+
+  const second = core.send("fake", session, "two", null, "big");
+  await settle(core, session, second.cursor);
+  const { lastTurn } = core.status("fake", session);
+  assert.equal(lastTurn?.ok, false);
+  assert.equal(lastTurn?.exitCode, 0);
+  assert.equal(
+    lastTurn?.error,
+    "fake did not report which model it launched the turn on, so a turn that names big cannot be verified",
+  );
+});
+
+test("a model the agent does not take is refused before anything runs", () => {
+  const { core, log } = relay(choosy());
+  const { session } = core.start("fake");
+
+  const unknown = refused(() => core.send("fake", session, "hi", null, "huge"));
+  assert.equal(unknown.code, "bad_request");
+  assert.match(unknown.message, /big, small, broken/);
+  assert.equal(refused(() => core.send("fake", session, "hi", null, "")).code, "bad_request");
+
+  const plain = relay(fake(["--id", "n", "--text", "x"]));
+  const other = plain.core.start("fake");
+  const none = refused(() => plain.core.send("fake", other.session, "hi", null, "sonnet"));
+  assert.equal(none.code, "bad_request");
+  assert.match(none.message, /does not take a model/);
+
+  // Nothing was spawned, recorded, bound or logged.
+  for (const [where, address] of [
+    [core, session],
+    [plain.core, other.session],
+  ] as const) {
+    const status = where.status("fake", address);
+    assert.equal(status.state, "idle");
+    assert.equal(status.lastTurn, null);
+    assert.equal(status.nativeId, null);
+    assert.equal(status.cursor, 0);
+  }
+  assert.deepEqual(log, []);
+  assert.deepEqual(plain.log, []);
+});
+
+test("a model does not get a send past the busy gate", async () => {
+  const { core } = relay(choosy(["--sleep", "150"]));
+  const { session } = core.start("fake");
+
+  core.send("fake", session, "first", null, "big");
+  assert.equal(refused(() => core.send("fake", session, "second", null, "small")).code, "busy");
+  assert.equal(refused(() => core.send("fake", session, "second")).code, "busy");
+  // The model is checked first, so a bad one is bad_request even while busy.
+  // Either way nothing is queued.
+  assert.equal(refused(() => core.send("fake", session, "second", null, "huge")).code, "bad_request");
+
+  assert.equal(await settle(core, session), "start big", "only the first turn ran");
 });
 
 test("interrupt returns a hanging session to idle and keeps its output", async () => {

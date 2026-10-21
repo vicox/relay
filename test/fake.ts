@@ -36,8 +36,10 @@ export function fake(start: string[], resume: string[] = start): Agent {
     start: (sessionId) => start.map((arg) => arg.replaceAll("{session}", sessionId)),
     resume: (nativeId) => resume.map((arg) => arg.replaceAll("{native}", nativeId)),
     parse: (line): AgentEvent | null => {
-      const event = JSON.parse(line) as { type?: string; id?: string; text?: string };
-      if (event.type === "session" && event.id) return { nativeId: event.id };
+      const event = JSON.parse(line) as { type?: string; id?: string; model?: string; text?: string };
+      if (event.type === "session" && event.id) {
+        return { nativeId: event.id, ...(event.model ? { launchedOn: event.model } : {}) };
+      }
       if (event.type === "text" && typeof event.text === "string") return { text: event.text };
       return null;
     },

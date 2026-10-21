@@ -50,9 +50,26 @@ export const OPERATIONS: Operation[] = [
       "Only one turn may be in flight per session: sending to a busy session fails with `busy` and is not queued. " +
       "`from` is optional provenance for humans reading Relay's log; the agent never sees it, so write any reply " +
       "address into the message text itself.",
-    properties: { agent: string, session: string, text: string, from: string },
+    properties: {
+      agent: string,
+      session: string,
+      text: string,
+      from: string,
+      model: {
+        type: "string",
+        description:
+          "Optional. claude takes opus, sonnet or haiku, each resolved to an exact model by Claude Code's own " +
+          "settings, in the same conversation. The turn runs on that model or fails: if Claude Code falls back " +
+          "to another, or does not say which model answered, Relay stops the turn and status reports why. " +
+          "Omitted, Relay passes no model and Claude " +
+          "Code's own rules decide, which may keep whatever model the conversation last used; name the model " +
+          "whenever it matters. Any other value, or a model for an agent that takes none, fails with " +
+          "`bad_request` and runs nothing.",
+      },
+    },
     required: ["agent", "session", "text"],
-    call: (core, args) => core.send(str(args.agent), str(args.session), str(args.text), optional(args.from) ?? null),
+    call: (core, args) =>
+      core.send(str(args.agent), str(args.session), str(args.text), optional(args.from) ?? null, nullable(args.model)),
   },
   {
     name: "read",
@@ -173,6 +190,11 @@ function str(value: unknown): string {
 
 function optional(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/** Absent is null; anything present must be a string, never quietly dropped. */
+function nullable(value: unknown): string | null {
+  return value === undefined || value === null ? null : str(value);
 }
 
 function num(value: unknown): number | undefined {

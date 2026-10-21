@@ -4,7 +4,8 @@ Five operations, one blocking primitive, no streaming.
 
 ```
 start     (agent, cwd?)                  → { agent, session, state, nativeId: null }
-send      (agent, session, text, from?)  → { cursor, state }
+send      (agent, session, text, from?, model?)
+                                         → { cursor, state }
 read      (agent, session, after?, wait?)→ { text, cursor, state }
 interrupt (agent, session)               → { state, interrupted }
 status    (agent, session)               → { agent, session, state, cwd, nativeId,
@@ -61,10 +62,91 @@ Starts the turn and returns immediately — it does not wait for the reply. The 
 output and nothing earlier.
 
 Binds the session on the first call ([product-model.md](product-model.md#a-session-is-a-relay-address-before-it-is-an-agent-session)).
-Fails with `busy` if a turn is in flight, or `unknown_session`.
+Fails with `busy` if a turn is in flight, `unknown_session`, or `bad_request` for a model the
+agent does not take.
 
 Text reaches the CLI on stdin, never as a shell argument, so message size and quoting are not
 the caller's problem.
+
+## Choosing a model
+
+```
+send("claude", "9f1c…", "Summarize the diff.", model: "haiku") → { cursor: 412, state: "busy" }
+```
+
+`model` is optional and only `claude` takes one: `opus`, `sonnet` or `haiku`. It applies to
+the turn it is sent with, and that turn runs in the session's own conversation — the same
+native id, with everything said so far — exactly as a turn without a model would:
+`claude -p … --model haiku --resume <nativeId>`, never `--fork-session` and never a new
+session.
+
+Relay passes the alias and nothing else. Which exact model each alias means is Claude Code's
+own setting, in the place every other Claude setting already lives — for example, in
+`~/.claude/settings.json`:
+
+```json
+{ "env": { "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5-5",
+           "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5-5",
+           "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5-5" } }
+```
+
+An alias left unpinned resolves to whatever Claude Code currently ships for it. Relay neither
+reads nor checks these settings ([Trust](#trust)). The exact model a turn ran on is in the
+transport log's `turn` line (`… 1.2 kB out  on claude-haiku-5-5`).
+
+Without `model`, Relay passes no model flag at all, so the argv is exactly what it was before
+`model` existed, and Claude Code's own precedence decides — nothing about such a turn is
+checked. Relay does not remember a model between sends. What Claude Code then picks is its
+business, not Relay's: per its documentation a resumed conversation usually keeps the model it
+last used, so a send without `model` after a `haiku` turn may stay on `haiku`, but
+`ANTHROPIC_MODEL` and the `ANTHROPIC_DEFAULT_*` variables can override that, and on Bedrock,
+Agent Platform and Foundry the last model is not restored at all. Name the model whenever it
+matters.
+
+### A turn that names a model runs on that model, or fails
+
+Claude Code can switch models by itself: a `fallbackModel` chain in its settings when a model
+is overloaded or unavailable, and — whatever the settings — a safety classifier that re-runs a
+flagged request on another model. Relay passes no `--fallback-model` and does not try to
+switch either off. It checks instead, from what the CLI reports: the `init` event names the
+exact model the turn was launched on, and each of the main conversation's messages names the
+model that wrote it. If the two ever differ, Relay stops the turn the way `interrupt` does and
+records
+
+```
+lastTurn: { ok: false, error: "haiku was launched on claude-haiku-5-5 but answered by claude-…;
+                                a turn that names a model does not fall back", … }
+```
+
+The check fails closed. A turn that names a model and cannot be checked — `init` without a
+model, or an answer that does not name its model — is stopped and failed the same way
+(`… did not report which model answered, so a turn that names haiku cannot be verified`),
+never trusted.
+
+Output written before the stop stays readable; nothing written after it is kept. The session
+stays bound to the same conversation, and the next send resumes it. Subagents are not checked
+— they run on their own models by design — nor are the error messages Claude Code writes
+itself, nor any turn without `model`, whose fallbacks behave as they always have. A `[1m]`
+context-window suffix is not a different model. The comparison is otherwise exact, so a
+provider that reports a model under a different name than it was launched with would fail
+such turns — loudly, never by running on something else.
+
+If Claude Code cannot use the model at all, that is a failed turn like any other:
+`lastTurn.ok = false` with the CLI's stderr. Relay never retries without the model and never
+starts a fresh conversation.
+
+### Refusals
+
+What Relay refuses, all with `bad_request`, before anything is spawned or recorded:
+
+- a model for an agent that takes none (`codex does not take a model`);
+- any other name (`claude takes model opus, sonnet, haiku, not "fable"`);
+- a `model` that is present but not a string, or empty. Dropping it would quietly run the
+  turn on the default instead.
+
+A refusal changes nothing — no turn, no `lastTurn`, no output, no log line. The model is
+checked before the busy rule, so a send to a busy session is `bad_request` if its model is
+wrong and `busy` otherwise; neither starts or queues anything.
 
 ## Transport metadata
 
@@ -193,11 +275,17 @@ way transport metadata stays useful in practice. Since each agent CLI exports it
 id, the operator's `relay` shim can set it — see the
 [README prerequisites](../README.md#prerequisites).
 
+`send` and `ask` also take `--model`, for `claude` only:
+
+```sh
+relay ask claude 9f1c "Summarize the diff." --model haiku
+```
+
 A flag's value is never a word of the message. The client knows which flags take one, so
 `relay send … "hello" --from codex/3b7e` sends exactly `hello` — and the same holds for
-`--cwd`, `--after` and `--port`. Regression tests in `test/client.test.ts` assert it against an
-agent that echoes its stdin, because this is the one place where a parsing slip would break the
-rule that `from` never reaches the agent.
+`--cwd`, `--after`, `--port` and `--model`. Regression tests in `test/client.test.ts` assert it
+against an agent that echoes its stdin, because this is the one place where a parsing slip
+would break the rule that `from` never reaches the agent.
 
 Because the CLI speaks MCP rather than a REST API, Relay cannot be driven with `curl`. Use
 `relay`, or any MCP inspector.
